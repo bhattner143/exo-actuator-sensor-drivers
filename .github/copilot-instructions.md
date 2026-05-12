@@ -23,7 +23,7 @@ workspace.
   `CubeMarsBusConfig`, `CUBEMARS_LIMITS`, `DEFAULT_BENCH_CONFIG` (Damiao bench:
   port `/dev/ttyACM0`, `can_id=0x01`, `master_id=0x11`), and
   `DEFAULT_CUBEMARS_BENCH_CONFIG` (CubeMars AK80-9: port `/dev/ttyACM0`,
-  `can_id=0x67`).
+  `can_id=0x04`).
 - `src/damiao_bus.py` -- LeRobot-style `DamiaoBus` wrapper around DM_CAN.
   Exposes `connect()`, `disconnect()`, `is_connected`, `enable_torque()`,
   `disable_torque()`, `read()`, `write()`, `read_state()`, `set_zero()`,
@@ -185,7 +185,7 @@ Both `DamiaoBus` and `CubemarsMotorsBus` implement the full contract:
 ## Hardware facts
 - Allowable voltage: 18–52 V. Rated 48 V, rated current 10 A, max 30 A.
 - CAN bus: 1 Mbps, **extended frame**, same HDSC USB-to-CAN adapter as Damiao.
-- CAN ID set via R-Link upper-computer software. Bench default: **0x67 (103 decimal)**.
+- CAN ID set via R-Link upper-computer software. Bench default: **0x04 (4 decimal)**.
 - Feedback CAN ID = motor's own ESC_ID (not a separate Master ID).
 - **MIT mode only** in `cubemars_bus.py` — servo modes (Pos-Vel, Speed,
   Duty) require the CubeMars upper-computer or a separate servo-mode driver.
@@ -220,7 +220,7 @@ with open_cubemars_bus(set_zero=True) as bus:
     q, dq, tau = bus.read_state()["j1"]
 ```
 `open_cubemars_bus()` uses `DEFAULT_CUBEMARS_BENCH_CONFIG` (port
-`/dev/ttyACM0`, CAN ID `0x67`). No `mode` argument -- MIT only.
+`/dev/ttyACM0`, CAN ID `0x04`). No `mode` argument -- MIT only.
 
 ## Test scripts (tests/cubemars/)
 | File | Purpose |

@@ -1,9 +1,0 @@
-[submodule "TMotorCANControl"]
-	path = TMotorCANControl
-	url = https://github.com/neurobionics/TMotorCANControl.git
-[submodule "jetson-orin-spi-overlay-guide"]
-	path = jetson-orin-spi-overlay-guide
-	url = https://github.com/jetsonhacks/jetson-orin-spi-overlay-guide
-[submodule "old/motor-control-routine"]
-	path = old/motor-control-routine
-	url = https://github.com/dmBots/motor-control-routine

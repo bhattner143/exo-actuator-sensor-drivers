@@ -1,4 +1,4 @@
-"""07 - Impedance spring-return on the CubeMars AK80-9.
+"""07 - Impedance spring-return on the CubeMars AK60-6 V3.0 KV80.
 
 The motor behaves like a torsional spring anchored at ORIGIN.
 Push the shaft away by hand -- it springs back.
@@ -15,7 +15,7 @@ KD tuning:
     KD ~ KP / 15 : critically damped, no overshoot
     NEVER KD = 0 (motor oscillates in position mode).
 
-AK80-9 limits: Kp [0, 500], Kd [0, 5], T_MAX 18 N.m
+AK60-6 limits: Kp [0, 500], Kd [0, 5], T_MAX 15 N.m
 """
 import sys
 import os

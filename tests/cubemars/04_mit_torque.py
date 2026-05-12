@@ -1,11 +1,11 @@
-"""04 - MIT open-loop torque on the CubeMars AK80-9.
+"""04 - MIT open-loop torque on the CubeMars AK60-6 V3.0 KV80.
 
     bus.write("goal_torque", {"j1": tau})
 
 Maps to: controlMIT(kp=0, kd=0, q_des=0, dq_des=0, tau_ff=tau)
 No feedback -- the shaft accelerates freely under the commanded torque.
 
-WARNING: AK80-9 T_MAX = 18 N.m.  Keep |tau| <= 1 N.m for bench tests
+WARNING: AK60-6 T_MAX = 15 N.m.  Keep |tau| <= 1 N.m for bench tests
 without a load; the motor will spin up quickly at higher values.
 """
 import sys

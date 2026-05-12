@@ -1,4 +1,4 @@
-"""02 - MIT position control on the CubeMars AK80-9.
+"""02 - MIT position control on the CubeMars AK60-6 V3.0 KV80.
 
     bus.write("goal_position", {"j1": q_des}, kp=KP, kd=KD)
 
@@ -6,9 +6,9 @@ Maps to the MIT bit-packed CAN frame:
     controlMIT(kp=KP, kd=KD, q_des=q_des, dq_des=0, tau_ff=0)
 
 NEVER use Kd=0 in position mode -- the motor will oscillate or runaway.
-Start with low Kp on a new motor; AK80-9 takes 30-80 well.
+Start with low Kp on a new motor; AK60-6 takes 30-80 well.
 
-AK80-9 limits: P_MAX=12.5 rad, V_MAX=50 rad/s, T_MAX=18 N.m
+AK60-6 limits: P_MAX=12.5 rad, V_MAX=45 rad/s, T_MAX=15 N.m
 """
 import sys
 import os

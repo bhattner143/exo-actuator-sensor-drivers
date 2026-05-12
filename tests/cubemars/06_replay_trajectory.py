@@ -1,4 +1,4 @@
-"""06 - Replay a recorded trajectory on the CubeMars AK80-9.
+"""06 - Replay a recorded trajectory on the CubeMars AK60-6 V3.0 KV80.
 
 Loads demo_trajectory_ak80.csv (written by 05_kinesthetic_record.py) and
 tracks it with stiffer gains using goal_position.  Holds the final

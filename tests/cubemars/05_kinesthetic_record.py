@@ -1,4 +1,4 @@
-"""05 - Kinesthetic teaching / hand guiding on the CubeMars AK80-9.
+"""05 - Kinesthetic teaching / hand guiding on the CubeMars AK60-6 V3.0 KV80.
 
 Sets low Kp/Kd so the motor is back-drivable by hand.  Records
 (t, q, dq, tau) at 100 Hz to demo_trajectory_ak80.csv.

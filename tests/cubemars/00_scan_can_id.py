@@ -50,7 +50,7 @@ _SEND_FRAME = np.array(
 _FRAME_LEN = 16
 
 
-def _build_null_mit_payload(model: str = "AK80-9") -> bytes:
+def _build_null_mit_payload(model: str = "AK60-6") -> bytes:
     """Pack the safest MIT poll: q=0, dq=0, kp=0, kd=0, tau=0."""
     pmax, vmax, tmax = CUBEMARS_LIMITS[model]
     q_u   = float_to_uint(0.0, -pmax,  pmax,  16)
@@ -94,7 +94,7 @@ def _extract_frames(data: bytes) -> tuple[list[bytes], bytes]:
     return frames, data[last:]
 
 
-def _decode_feedback(payload: bytes, model: str = "AK80-9"
+def _decode_feedback(payload: bytes, model: str = "AK60-6"
                      ) -> tuple[float, float, float]:
     pmax, vmax, tmax = CUBEMARS_LIMITS[model]
     pos_u = np.uint16((payload[1] << 8) | payload[2])
@@ -162,7 +162,7 @@ def main():
     p.add_argument("--port",  default="/dev/ttyACM0")
     p.add_argument("--start", type=lambda x: int(x, 0), default=0x01)
     p.add_argument("--end",   type=lambda x: int(x, 0), default=0x80)
-    p.add_argument("--model", default="AK80-9", choices=list(CUBEMARS_LIMITS))
+    p.add_argument("--model", default="AK60-6", choices=list(CUBEMARS_LIMITS))
     args = p.parse_args()
 
     hits = scan(args.port, args.start, args.end, args.model)

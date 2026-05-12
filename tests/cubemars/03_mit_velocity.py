@@ -1,11 +1,11 @@
-"""03 - MIT velocity control on the CubeMars AK80-9.
+"""03 - MIT velocity control on the CubeMars AK60-6 V3.0 KV80.
 
     bus.write("goal_velocity", {"j1": v_des}, kd=KD)
 
 Maps to: controlMIT(kp=0, kd=KD, q_des=0, dq_des=v_des, tau_ff=0)
 Only the damping term acts (Kp is forced to 0).
 
-AK80-9 V_MAX = 50 rad/s (~477 rpm output shaft).
+AK60-6 V_MAX = 45 rad/s (~430 rpm output shaft).
 Keep test speeds well below that; 3-6 rad/s is a safe bench test.
 """
 import sys

@@ -5,7 +5,7 @@ components sharing one Jetson Orin Nano bench:
 
 1. **Damiao DM-J4310-2EC V1.1** -- geared servo motor (24 V, CAN @ 1 Mbps,
    UART debug @ 921600 bps, 10:1 gearbox).
-2. **CubeMars AK80-9 KV60** -- brushless servo motor (18-52 V, CAN @ 1 Mbps,
+2. **CubeMars AK60-6 V3.0 KV80** -- brushless servo motor (18-52 V, CAN @ 1 Mbps,
    MIT mode only via `cubemars_bus.py`; firmware configured with R-Link).
 3. **AS5048A** -- 14-bit absolute magnetic encoder (SPI mode 1, up to 10 MHz,
    connected to Jetson SPI0 via device-tree overlay).
@@ -22,7 +22,7 @@ workspace.
   Contains `DamiaoMotorConfig`, `DamiaoBusConfig`, `CubeMarsMotorConfig`,
   `CubeMarsBusConfig`, `CUBEMARS_LIMITS`, `DEFAULT_BENCH_CONFIG` (Damiao bench:
   port `/dev/ttyACM0`, `can_id=0x01`, `master_id=0x11`), and
-  `DEFAULT_CUBEMARS_BENCH_CONFIG` (CubeMars AK80-9: port `/dev/ttyACM0`,
+  `DEFAULT_CUBEMARS_BENCH_CONFIG` (CubeMars AK60-6 V3.0 KV80: port `/dev/ttyACM0`,
   `can_id=0x04`).
 - `src/damiao_bus.py` -- LeRobot-style `DamiaoBus` wrapper around DM_CAN.
   Exposes `connect()`, `disconnect()`, `is_connected`, `enable_torque()`,
@@ -178,19 +178,20 @@ Both `DamiaoBus` and `CubemarsMotorsBus` implement the full contract:
 
 ---
 
-# CubeMars AK80-9 KV60
+# CubeMars AK60-6 V3.0 KV80
 
 ## Hardware facts
 - Allowable voltage: 18–52 V. Rated 48 V, rated current 10 A, max 30 A.
 - CAN bus: 1 Mbps, **extended frame**, same HDSC USB-to-CAN adapter as Damiao.
-- CAN ID set via R-Link upper-computer software. Bench default: **0x04 (4 decimal)**.
+- CAN ID confirmed via scan: **0x68 = 104 decimal** (set via R-Link).
 - Feedback CAN ID = motor's own ESC_ID (not a separate Master ID).
 - **MIT mode only** in `cubemars_bus.py` — servo modes (Pos-Vel, Speed,
   Duty) require the CubeMars upper-computer or a separate servo-mode driver.
-- Limits for MIT bit-packing: `P_MAX=12.5 rad, V_MAX=50 rad/s, T_MAX=18 N.m`.
+- **R-Link MIT setting: "Inquiry Feedback"** (NOT "Periodic Feedback" which is Servo mode).
+- Limits for MIT bit-packing: `P_MAX=12.5 rad, V_MAX=45 rad/s, T_MAX=15 N.m`.
 - `Kp ∈ [0, 500]`, `Kd ∈ [0, 5]`. **Never Kd=0 in position mode.**
 - No firmware parameter read API (unlike Damiao). Limits are hard-coded in
-  `CUBEMARS_LIMITS["AK80-9"]` in `motor_config.py`.
+  `CUBEMARS_LIMITS["AK60-6"]` in `motor_config.py`.
 - Calibration (Motor Identification + Encoder Identification) done once via
   R-Link before first use. Parameters saved as `.AppParams` / `.McParams`
   files. Re-calibrate only after hardware reassembly or firmware update.

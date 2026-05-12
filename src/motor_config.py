@@ -94,7 +94,7 @@ class CubeMarsMotorConfig:
     Attributes
     ----------
     can_id : ESC_ID set on the motor (DIP switches or configuration tool).
-    model  : String key into CUBEMARS_LIMITS, e.g. "AK80-9".
+    model  : String key into CUBEMARS_LIMITS, e.g. "AK60-6".
              Determines the PMAX/VMAX/TMAX scaling for the MIT frame.
 
     Note: CubeMars does not use a separate Master ID.  Feedback frames
@@ -102,7 +102,7 @@ class CubeMarsMotorConfig:
     master_id field is needed.
     """
     can_id: int = 0x01
-    model:  str = "AK80-9"
+    model:  str = "AK60-6"
 
     def __post_init__(self):
         if self.model not in CUBEMARS_LIMITS:
@@ -169,22 +169,20 @@ DEFAULT_BENCH_CONFIG = DamiaoBusConfig(
 
 
 # ---------------------------------------------------------------------------
-# Default bench-test config (single CubeMars AK80-9 KV60)
+# Default bench-test config (single CubeMars AK60-6 V3.0 KV80)
 # ---------------------------------------------------------------------------
 # Uses the SAME HDSC USB-to-CAN adapter as the Damiao motor -- swap the
 # CAN H/L leads between motors; they are not run concurrently on this bench.
 #
-# CAN ID set via the R-Link / CubeMars upper-computer: 104 decimal (0x68).
-# (Detected via tests/cubemars/00_scan_can_id.py, which saw the motor
-#  broadcasting servo-mode status frames at extended CAN ID 0x2968 =
-#  (0x29 << 8) | 0x68 ; the lower byte 0x68 is the motor ID.)
-# Model "AK80-9" covers the KV60 variant:
-#   P_MAX = 12.5 rad, V_MAX = 50 rad/s, T_MAX = 18 N.m
-# If you re-programme the CAN ID via R-Link, update can_id below.
+# CAN ID confirmed via 00_scan_can_id.py: 104 decimal (0x68).
+# CAN Mode: set to "Inquiry Feedback" (MIT mode) in R-Link.
+#   "Periodic Feedback" (Servo mode) will NOT respond to this driver.
+# Model "AK60-6" limits (confirmed from R-Link: Hw=AK60_6V, Sw=AK60_6_SE_V3):
+#   P_MAX = 12.5 rad, V_MAX = 45 rad/s, T_MAX = 15 N.m
 DEFAULT_CUBEMARS_BENCH_CONFIG = CubeMarsBusConfig(
     port="/dev/ttyACM0",
     baudrate=921600,
     motors={
-        "j1": CubeMarsMotorConfig(can_id=0x68, model="AK80-9"),
+        "j1": CubeMarsMotorConfig(can_id=0x68, model="AK60-6"),
     },
 )

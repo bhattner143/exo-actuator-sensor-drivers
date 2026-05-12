@@ -18,7 +18,7 @@
   showstringspaces=false, language=Python,
 }
 
-\title{\textbf{CubeMars AK80-9 KV60}\\[2pt]
+\title{\textbf{CubeMars AK60-6 V3.0 KV80}\\[2pt]
        \large Internal notes -- MIT protocol, wiring, calibration,\\
        servo-mode vs.\ MIT-mode, troubleshooting}
 \author{Repo \texttt{exo-actuator-sensor-drivers}}
@@ -46,19 +46,20 @@ mini-cheetah actuators and subsequently adopted by many vendors
 \toprule
 Property & Value \\
 \midrule
-Model              & AK80-9 KV60 \\
+Model              & AK60-6 V3.0 KV80 \\
 Voltage            & 18--52\,V (rated 48\,V) \\
 Rated current      & 10\,A \\
 Peak current       & 30\,A \\
-Gear ratio         & 9:1 planetary \\
-Output torque (cont.) & $\approx$7.5\,N$\cdot$m \\
-Output torque (peak)  & 18\,N$\cdot$m \\
-Output speed (no-load)& $\approx$52\,rad/s at 48\,V \\
+Gear ratio         & 6:1 planetary \\
+Output torque (cont.) & $\approx$5\,N$\cdot$m \\
+Output torque (peak)  & 15\,N$\cdot$m \\
+Output speed (no-load)& $\approx$45\,rad/s at 48\,V \\
 Position range     & $\pm 12.5$\,rad (firmware MIT limit, \texttt{PMAX}) \\
 Encoder            & dual 14-bit magnetic (rotor + output shaft) \\
 CAN bus            & 1\,Mbps standard or extended frame \\
 CAN mode (our driver) & \textbf{MIT mode only} (see Section~\ref{sec:modes}) \\
 CAN ID (bench)     & \textbf{0x68 = 104} (confirmed via scan 12~May~2026) \\
+R-Link MIT setting & \textbf{Inquiry Feedback} (not ``Periodic Feedback'') \\
 Configuration tool & R-Link (CubeMars Windows application) \\
 \bottomrule
 \end{tabular}
@@ -189,8 +190,8 @@ $K_d$ 12-bit, $\tau$ 12-bit.  All scaled linearly:
   \quad\text{where }X_{\max} \in \{P_{\max}, V_{\max}, T_{\max}\}
 \]
 
-For AK80-9: $P_{\max}=12.5$\,rad, $V_{\max}=50$\,rad/s,
-$T_{\max}=18$\,N$\cdot$m.
+For AK60-6: $P_{\max}=12.5$\,rad, $V_{\max}=45$\,rad/s,
+$T_{\max}=15$\,N$\cdot$m.
 
 \subsubsection{Feedback frame (motor $\to$ host)}
 
@@ -243,7 +244,7 @@ effect after a power cycle.
 \toprule
  & \textbf{MIT Mode} & \textbf{Servo Mode (``Periodic Feedback'')} \\
 \midrule
-R-Link setting  & CAN Mode = \textbf{MIT}
+R-Link setting  & CAN Mode = \textbf{Inquiry Feedback}
                 & CAN Mode = \textbf{Periodic Feedback} \\
 CAN frame type  & Standard 2.0A (11-bit ID)
                 & Extended 2.0B (29-bit ID) \\
@@ -359,7 +360,7 @@ To use \texttt{cubemars\_bus.py} (MIT mode), open R-Link and apply:
 \toprule
 R-Link field & Current value & Required value \\
 \midrule
-CAN Mode    & Periodic Feedback & \textbf{MIT} \\
+  CAN Mode    & Periodic Feedback & \textbf{Inquiry Feedback} (= MIT mode) \\
 CAN Bitrate & 1\,Mbps           & 1\,Mbps (keep) \\
 CAN ID      & 4                 & \textbf{104} (or any value -- update \texttt{motor\_config.py}) \\
 \bottomrule
@@ -443,7 +444,7 @@ Open-loop torque  & 0     & 0     & 0          & 0 \\
 \textbf{Warning:} never command $K_p > 0$, $K_d = 0$ in position mode.
 Without damping the motor oscillates or runs away.
 
-\subsection{Recommended gains for AK80-9}
+\subsection{Recommended gains for AK60-6}
 
 \begin{center}\small
 \begin{tabular}{llll}
@@ -454,7 +455,7 @@ Stiff position hold  & 80--150 & 2.0--4.0  & Heavy load; increase $K_d$ first \\
 Compliant hold       & 30--60  & 1.0--2.0  & Lighter load or back-drivable \\
 Impedance (teaching) & 0--10   & 0.3--0.8  & Very compliant; record demos \\
 Velocity tracking    & 0       & 1.0--3.0  & $K_p=0$ mandatory \\
-Torque (open-loop)   & 0       & 0         & Max 1\,N$\cdot$m unloaded \\
+Torque (open-loop)   & 0       & 0         & Max 1\,N$\cdot$m unloaded (T\_MAX=15\,N$\cdot$m) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -596,20 +597,16 @@ Script & Purpose \\
   (CAN~ID \texttt{0x2968}, cmd \texttt{0x29}, motor ID \texttt{0x68} = 104).
   \texttt{cubemars\_bus.py} speaks MIT only (standard CAN).  All
   feedback is silently discarded; \texttt{read\_state()} returns zeros.
-  \textbf{Fix:} R-Link $\to$ CAN Mode = MIT $\to$ Write $\to$ power-cycle.
-
-\item \textbf{Motor ESC\_ID is 104, not 4.}
-  R-Link showed ``CAN~ID: 4'' in the Application Configuration panel
-  during initial bring-up, but this referred to a stale servo-mode
-  configuration.  The actual ESC\_ID embedded in the extended-CAN
+  \textbf{Fix:} R-Link $\to$ CAN Mode = \textbf{Inquiry Feedback} $\to$ Write
+  $\to$ power-cycle.
   feedback frame is 104 (\texttt{0x68}).  \texttt{motor\_config.py}
   has been corrected to \texttt{can\_id=0x68}.
 
-\item \textbf{No firmware parameter read over CAN.}
-  Unlike Damiao, the AK80-9 does not expose \texttt{PMAX}, \texttt{VMAX},
-  or \texttt{TMAX} via CAN.  These are hard-coded in
-  \texttt{CUBEMARS\_LIMITS["AK80-9"] = [12.5, 50.0, 18.0]}
-  and must be confirmed against the datasheet if the firmware is updated.
+\item \textbf{Model is AK60-6 V3.0 KV80, not AK80-9.}
+  R-Link hardware/software version string \texttt{AK60\_6V} /
+  \texttt{AK60\_6\_SE\_V3} confirmed on 12~May~2026.  All MIT limits
+  updated to AK60-6 values:
+  \texttt{CUBEMARS\_LIMITS["AK60-6"] = [12.5, 45.0, 15.0]}.
 
 \item \textbf{Never Kd = 0 in position mode.}
   Same rule as Damiao MIT mode: $K_d = 0$ with $K_p > 0$ removes all

@@ -56,9 +56,7 @@ workspace.
   Read first when asked anything about the encoder. **Must be updated and
   recompiled after changes to `src/as5048a.py`, `src/encoder_config.py`, or
   `tests/encoder/`** (see maintenance rule).
-- `docs/notes/cubemars_notes.tex` -- CubeMars notes file. **Does not exist yet**;
-  will be created after initial successful motor testing. Do not reference it
-  until it exists.
+- `docs/notes/cubemars_notes.tex` -- CubeMars notes file. **Created after initial hardware bring-up (12 May 2026).** Read first when asked anything about the CubeMars motor. **Must be updated and recompiled after changes to `src/cubemars_bus.py`, `src/motor_config.py` (CubeMars sections), or `tests/cubemars/`.** Compile: `cd docs/notes && pdflatex -interaction=nonstopmode cubemars_notes.tex` (twice).
 - `old/motor-control-routine/` -- vendor examples for C, C#, MATLAB, ROS, STM32 (archived).
 - `old/` -- archived root-level files (not active).
 - `jetson-orin-spi-overlay-guide/` -- DTS overlay guide and install scripts.

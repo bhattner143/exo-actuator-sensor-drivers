@@ -174,16 +174,17 @@ DEFAULT_BENCH_CONFIG = DamiaoBusConfig(
 # Uses the SAME HDSC USB-to-CAN adapter as the Damiao motor -- swap the
 # CAN H/L leads between motors; they are not run concurrently on this bench.
 #
-# CAN ID set via the R-Link / CubeMars upper-computer: 4 decimal (0x04).
-# (See R-Link Application Configuration: "CAN ID  ID: 4", CAN Mode = Periodic Feedback,
-#  CAN Bitrate = 1 Mbps, CAN Fdb Rate = 50 Hz, UART Bitrate = 500000, Timeout = 1000 ms.)
+# CAN ID set via the R-Link / CubeMars upper-computer: 104 decimal (0x68).
+# (Detected via tests/cubemars/00_scan_can_id.py, which saw the motor
+#  broadcasting servo-mode status frames at extended CAN ID 0x2968 =
+#  (0x29 << 8) | 0x68 ; the lower byte 0x68 is the motor ID.)
 # Model "AK80-9" covers the KV60 variant:
 #   P_MAX = 12.5 rad, V_MAX = 50 rad/s, T_MAX = 18 N.m
-# If you re-programmed the CAN ID via R-Link, update can_id below.
+# If you re-programme the CAN ID via R-Link, update can_id below.
 DEFAULT_CUBEMARS_BENCH_CONFIG = CubeMarsBusConfig(
     port="/dev/ttyACM0",
     baudrate=921600,
     motors={
-        "j1": CubeMarsMotorConfig(can_id=0x04, model="AK80-9"),
+        "j1": CubeMarsMotorConfig(can_id=0x68, model="AK80-9"),
     },
 )

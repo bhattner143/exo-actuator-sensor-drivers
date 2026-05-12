@@ -1,0 +1,25 @@
+"""07 - MIT open-loop torque via DamiaoBus.
+
+    bus.write("goal_torque", {"j1": tau})
+
+Maps to ``controlMIT(motor, 0, 0, 0, 0, tau)`` -- no feedback.  WARNING:
+unloaded motor accelerates freely.  Keep tau <= 1 N.m for bench tests.
+"""
+import sys
+import os
+import time
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'src'))
+from _common import open_bus
+
+TAU_NM   = 0.5     # N.m on output shaft (keep <= 1 N.m unloaded)
+DURATION = 1.5     # seconds per step
+
+with open_bus() as bus:
+    for tau in [TAU_NM, -TAU_NM]:
+        print(f"t_ff = {tau:+.2f} N.m for {DURATION:.1f} s")
+        t0 = time.time()
+        while time.time() - t0 < DURATION:
+            bus.write("goal_torque", {"j1": tau})
+            time.sleep(0.01)
+        q, dq, _ = bus.read_state()["j1"]
+        print(f"   end vel={dq:+.3f}  pos={q:+.3f}")

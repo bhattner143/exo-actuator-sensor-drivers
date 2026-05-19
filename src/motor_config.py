@@ -171,18 +171,17 @@ DEFAULT_BENCH_CONFIG = DamiaoBusConfig(
 # ---------------------------------------------------------------------------
 # Default bench-test config (single CubeMars AK60-6 V3.0 KV80)
 # ---------------------------------------------------------------------------
-# Uses the SAME HDSC USB-to-CAN adapter as the Damiao motor -- swap the
-# CAN H/L leads between motors; they are not run concurrently on this bench.
+# Uses the DSDTech SH-C30A USB-to-CAN adapter (gs_usb / SocketCAN can1).
 #
-# CAN ID confirmed via 00_scan_can_id.py: 104 decimal (0x68).
-# CAN Mode: set to "Inquiry Feedback" (MIT mode) in R-Link.
-#   "Periodic Feedback" (Servo mode) will NOT respond to this driver.
+# CAN ID confirmed via active probe (00_probe_motor.py): 2 decimal (0x02).
+#   Previous entry (0x68) was the R-Link default; motor was re-configured.
+# CAN Mode: "Inquiry Feedback" (Query-Reply) -- motor replies on command only.
 # Model "AK60-6" limits (confirmed from R-Link: Hw=AK60_6V, Sw=AK60_6_SE_V3):
 #   P_MAX = 12.5 rad, V_MAX = 45 rad/s, T_MAX = 15 N.m
 DEFAULT_CUBEMARS_BENCH_CONFIG = CubeMarsBusConfig(
     port="/dev/ttyACM0",
     baudrate=921600,
     motors={
-        "j1": CubeMarsMotorConfig(can_id=0x68, model="AK60-6"),
+        "j1": CubeMarsMotorConfig(can_id=0x02, model="AK60-6"),
     },
 )

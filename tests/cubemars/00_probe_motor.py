@@ -14,7 +14,7 @@ Periodic or Query-Reply mode).  Therefore this is a clean ping:
 
 Frame format (V3.0, manual §4.2)::
 
-    arbitration ID = (CAN_PACKET_SET_MIT << 8) | ESC_ID = (8 << 8) | 0x68 = 0x0868
+    arbitration ID = (CAN_PACKET_SET_MIT << 8) | ESC_ID = (8 << 8) | 0x02 = 0x0802
     payload (Kp first byte order)  = all zeros (after float→uint encoding)
 
 Run:
@@ -29,7 +29,7 @@ import time
 import can
 
 BITRATE         = 1_000_000
-DEFAULT_ESC_ID  = 0x68
+DEFAULT_ESC_ID  = 0x02   # confirmed via active probe on this bench
 MIT_PACKET_TYPE = 8
 FB_PACKET_TYPE  = 0x29
 
@@ -94,7 +94,7 @@ def main() -> int:
                     help="SocketCAN channel name (default: can0)")
     ap.add_argument("--id", type=lambda x: int(x, 0), default=DEFAULT_ESC_ID,
                     dest="esc_id",
-                    help="Motor ESC_ID in decimal or hex (default: 0x68 = 104)")
+                    help="Motor ESC_ID in decimal or hex (default: 0x02 = 2)")
     args = ap.parse_args()
 
     esc_id = args.esc_id

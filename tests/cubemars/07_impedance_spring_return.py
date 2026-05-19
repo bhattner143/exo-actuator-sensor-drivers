@@ -1,56 +1,47 @@
-"""07 - Impedance spring-return on the CubeMars AK60-6 V3.0 KV80.
+"""07 - Impedance "spring return" for AK60-6 V3.0 KV80.
 
-The motor behaves like a torsional spring anchored at ORIGIN.
-Push the shaft away by hand -- it springs back.
+Anchors a soft virtual spring at q = 0.  Push the shaft away by hand
+and feel it spring back.  Demonstrates back-drivable MIT impedance
+control.
 
-Control law (MIT mode):
-    tau_cmd = KP * (ORIGIN - q) + KD * (0 - dq)
-
-KP tuning guide (N.m/rad):
-    5-15   : soft / back-drivable
-    30-60  : moderate restoring force
-    100+   : stiff
-KD tuning:
-    KD ~ KP / 30 : light, springy return
-    KD ~ KP / 15 : critically damped, no overshoot
-    NEVER KD = 0 (motor oscillates in position mode).
-
-AK60-6 limits: Kp [0, 500], Kd [0, 5], T_MAX 15 N.m
+Run:
+  sudo python3 tests/cubemars/07_impedance_spring_return.py
 """
-import sys
+import math
 import os
+import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
-from _common import open_cubemars_bus
+from _common import open_ak_v3_bench
 
-KP          = 5.0
-KD          = 0.5
-ORIGIN      = 0.0
-LOOP_HZ     = 100
-RUN_SECONDS = 30
+KP = 10.0     # spring stiffness (0..500); raise for stiffer hold
+KD = 0.5      # damping          (0..5; never 0)
+DURATION_S = 30.0
+CONTROL_HZ = 100
 
-LOOP_DT = 1.0 / LOOP_HZ
-N_STEPS = int(RUN_SECONDS * LOOP_HZ)
+with open_ak_v3_bench(set_zero=True) as bus:
+    print(f"Spring-return impedance: anchor=0 rad, Kp={KP}, Kd={KD}")
+    print(f"Push the shaft -- it should return to zero.  Ctrl-C to stop.\n")
 
-# set_zero=True latches the current angle as ORIGIN on entry.
-with open_cubemars_bus(set_zero=True) as bus:
-    print(f"Spring-return active for {RUN_SECONDS} s  (KP={KP}, KD={KD})")
-    print("Push the shaft away and watch it return.  Ctrl+C to stop early.\n")
+    dt = 1.0 / CONTROL_HZ
+    t_start = time.monotonic()
+    last_print = 0.0
+    try:
+        while time.monotonic() - t_start < DURATION_S:
+            t_loop = time.monotonic()
+            bus.write("goal_position", {"j1": 0.0}, kp=KP, kd=KD)
+            q, dq, ia = bus.read_state(timeout=0.02)["j1"]
+            t = t_loop - t_start
+            if t - last_print >= 0.25:
+                print(f"  t={t:6.2f}s  q={math.degrees(q):+7.2f} deg  "
+                      f"dq={dq:+5.2f} rad/s  I={ia:+5.2f} A")
+                last_print = t
+            sleep_for = dt - (time.monotonic() - t_loop)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+    except KeyboardInterrupt:
+        pass
 
-    for step in range(N_STEPS):
-        t_start = time.time()
-
-        q, dq, tau = bus.read_state()["j1"]
-        bus.write("goal_position", {"j1": ORIGIN}, kp=KP, kd=KD)
-
-        if step % (LOOP_HZ // 2) == 0:
-            print(f"  t={step * LOOP_DT:6.1f}s  "
-                  f"q={q:+6.3f} rad  dq={dq:+6.3f} rad/s  tau={tau:+5.2f} N.m")
-
-        sleep_t = LOOP_DT - (time.time() - t_start)
-        if sleep_t > 0:
-            time.sleep(sleep_t)
-
-    print("\nSpring-return demo complete.")
+    print("\nDone.  Releasing motor.")

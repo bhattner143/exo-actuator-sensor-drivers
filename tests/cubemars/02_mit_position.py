@@ -1,33 +1,52 @@
-"""02 - MIT position control on the CubeMars AK60-6 V3.0 KV80.
+"""02 - MIT position hold for AK60-6 V3.0 KV80.
 
-    bus.write("goal_position", {"j1": q_des}, kp=KP, kd=KD)
+Steps through several target angles using MIT mode (Kp/Kd position).
+V3.0 firmware MIT byte order is Kp-first (handled by AkV3Motor.set_mit).
 
-Maps to the MIT bit-packed CAN frame:
-    controlMIT(kp=KP, kd=KD, q_des=q_des, dq_des=0, tau_ff=0)
+SAFETY:
+  - Motor must be free to rotate (unloaded), or holding only its own arm.
+  - Kd MUST be > 0 in position mode -- Kd=0 will cause runaway oscillation.
+  - Position is in OUTPUT-SHAFT radians.  Limits: P_MAX = ±12.56 rad.
 
-NEVER use Kd=0 in position mode -- the motor will oscillate or runaway.
-Start with low Kp on a new motor; AK60-6 takes 30-80 well.
-
-AK60-6 limits: P_MAX=12.5 rad, V_MAX=45 rad/s, T_MAX=15 N.m
+Run:
+  sudo python3 tests/cubemars/02_mit_position.py
 """
-import sys
-import os
 import math
+import os
+import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
-from _common import open_cubemars_bus
+from _common import open_ak_v3_bench
 
-KP = 30.0   # stiffness [0, 500]
-KD = 1.0    # damping   [0, 5]  -- NEVER 0
+KP = 60.0        # stiffness  (0..500) -- AK60-6 V3.0 tracks slowly below ~40
+KD = 1.5         # damping    (0..5)  -- NEVER set to 0 here
+HOLD_S = 1.5     # seconds to hold each target
+CONTROL_HZ = 100
 
-# set_zero=True latches q=0 at the current shaft angle on entry.
-with open_cubemars_bus(set_zero=True) as bus:
-    for tgt in [math.pi / 2, 0.0, -math.pi / 4, 0.0]:
-        print(f"-> {tgt:+.3f} rad (~{math.degrees(tgt):.0f} deg)")
-        for _ in range(300):                  # ~3 s @ 100 Hz
-            bus.write("goal_position", {"j1": tgt}, kp=KP, kd=KD)
-            time.sleep(0.01)
-        q, dq, _ = bus.read_state()["j1"]
-        print(f"   pos={q:+.3f}  vel={dq:+.3f}")
+# Modest sweep around the current resting position; do not chase ±2pi at once.
+TARGETS_DEG = [0.0, 15.0, -15.0, 30.0, 0.0]
+
+with open_ak_v3_bench(set_zero=True) as bus:
+    print(f"AK60-6 MIT position hold  Kp={KP} Kd={KD}")
+    print(f"Targets (deg): {TARGETS_DEG}\n")
+
+    dt = 1.0 / CONTROL_HZ
+    for tgt_deg in TARGETS_DEG:
+        tgt_rad = math.radians(tgt_deg)
+        t0 = time.monotonic()
+        last_print = 0.0
+        while time.monotonic() - t0 < HOLD_S:
+            bus.write("goal_position", {"j1": tgt_rad}, kp=KP, kd=KD)
+            q, dq, ia = bus.read_state(timeout=0.02)["j1"]
+            now = time.monotonic() - t0
+            if now - last_print >= 0.2:
+                print(f"  tgt={tgt_deg:+6.1f} deg  "
+                      f"q={math.degrees(q):+7.2f} deg  "
+                      f"dq={dq:+6.2f} rad/s  I={ia:+5.2f} A")
+                last_print = now
+            time.sleep(max(0.0, dt - 0.005))
+        print()
+
+    print("Done.  Releasing motor (zero torque).")

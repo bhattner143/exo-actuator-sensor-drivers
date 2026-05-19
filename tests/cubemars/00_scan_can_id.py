@@ -11,7 +11,7 @@ When to use:
 Prerequisites:
   - Motor powered (18-52 V)
   - CAN H/L wired, 120 Ohm termination present
-  - R-Link CAN Mode = "MIT"  (Periodic Feedback / Servo mode will NOT
+  - R-Link CAN Mode = "Inquiry Feedback"  (Periodic Feedback / Servo mode will NOT
     respond to MIT polls -- that is a known limitation of cubemars_bus.py)
   - HDSC adapter on /dev/ttyACM0
 
@@ -21,7 +21,7 @@ Usage:
     python 00_scan_can_id.py --port /dev/ttyACM1  # different adapter
 
 If nothing responds in 0x01..0x7F, the motor is either:
-  - In Servo mode (Periodic Feedback) -> change to MIT in R-Link
+  - In Servo mode (Periodic Feedback) -> change to Inquiry Feedback in R-Link
   - Unpowered, miswired, or has no 120 Ohm termination
   - Using extended-CAN IDs beyond 0x7F (rare for AK-series MIT mode)
 """
@@ -48,6 +48,10 @@ _SEND_FRAME = np.array(
      0x00, 0x00, 0x00, 0x00, 0x00, 0x00], np.uint8)
 
 _FRAME_LEN = 16
+
+
+_CMD_ENABLE  = bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC])
+_CMD_DISABLE = bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFD])
 
 
 def _build_null_mit_payload(model: str = "AK60-6") -> bytes:
@@ -127,6 +131,10 @@ def scan(port: str, start: int, end: int, model: str,
 
         buf = b""
         for can_id in range(start, end + 1):
+            # MIT mode requires an enable frame before the motor responds.
+            # Send enable, brief pause, then the null MIT poll.
+            _send(ser, can_id, _CMD_ENABLE)
+            time.sleep(0.005)
             _send(ser, can_id, payload)
             time.sleep(per_id_delay_s)
 
@@ -170,9 +178,9 @@ def main():
     print("\n" + "=" * 60)
     if not hits:
         print("No replies in the scanned range.")
-        print("\nThe motor is probably in Servo mode (R-Link 'CAN Mode' =")
-        print("'Periodic Feedback').  Change it to 'MIT' in R-Link, click")
-        print("Write, power-cycle the motor, and rerun this scan.")
+        print("\nThe motor may be in Servo mode (R-Link 'CAN Mode' =")
+        print("'Periodic Feedback').  Change it to 'Inquiry Feedback' in R-Link,")
+        print("click Write, power-cycle the motor, and rerun this scan.")
         print("\nAlso verify: power, CAN H/L polarity, 120 Ohm termination.")
         return 1
 

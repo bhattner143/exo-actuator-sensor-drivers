@@ -187,7 +187,10 @@ Both `DamiaoBus` and `CubemarsMotorsBus` implement the full contract:
 - Feedback CAN ID = motor's own ESC_ID (not a separate Master ID).
 - **MIT mode only** in `cubemars_bus.py` — servo modes (Pos-Vel, Speed,
   Duty) require the CubeMars upper-computer or a separate servo-mode driver.
-- **R-Link MIT setting: "Inquiry Feedback"** (NOT "Periodic Feedback" which is Servo mode).
+- **R-Link "CAN Mode" = feedback delivery only** (per V3.0.1 manual §3.1.1.1):
+  `Periodic Feedback` = motor auto-broadcasts at CAN Fdb Rate.
+  `Query-Reply` (R-Link mistranslates as "Inquiry Feedback") = motor replies only after a command.
+  Both modes accept MIT and Servo commands. NOT a mode-switch.
 - Limits for MIT bit-packing: `P_MAX=12.5 rad, V_MAX=45 rad/s, T_MAX=15 N.m`.
 - `Kp ∈ [0, 500]`, `Kd ∈ [0, 5]`. **Never Kd=0 in position mode.**
 - No firmware parameter read API (unlike Damiao). Limits are hard-coded in
@@ -247,9 +250,84 @@ with open_cubemars_bus(set_zero=True) as bus:
    teaching (separate from Damiao's `demo_trajectory.csv`).
 
 ## docs/notes maintenance rule (CubeMars)
-`docs/notes/cubemars_notes.tex` **does not exist yet** -- it will be
-created after initial successful motor testing confirms the hardware and
-driver are working correctly.  Do not reference it until it exists.
+`docs/notes/cubemars_notes.tex` exists and is the authoritative
+reference. Update + recompile (twice) after any change to
+`src/cubemars_bus.py`, `src/ak_v3_can.py`, the `motor_config.py`
+CubeMars sections, or `tests/cubemars/`:
+```bash
+cd docs/notes
+pdflatex -interaction=nonstopmode cubemars_notes.tex
+pdflatex -interaction=nonstopmode cubemars_notes.tex
+```
+
+---
+
+# CubeMars AK-series V3.0 firmware protocol (NEW — see `ak_v3_can.py`)
+
+The **V3.0 driver-board firmware** (manual `AK Series V3.0.1`) uses a
+different protocol than the classic Damiao-style MIT used by the older
+`cubemars_bus.py`. New code targeting a freshly-flashed V3.0 board
+should use `src/ak_v3_can.py` (python-can + SocketCAN).
+
+## V3.0 unified extended-ID scheme
+- All control modes use **CAN 2.0B extended frames** (29-bit ID).
+- `CAN_ID = (PACKET_TYPE << 8) | ESC_ID`
+- Packet types: `0=Duty, 1=Current, 2=Brake, 3=RPM, 4=Pos, 5=Origin,
+  6=PosVel, 8=MIT`.
+- Feedback ID: `(0x29 << 8) | ESC_ID` (e.g. `0x2968` for ESC=0x68).
+
+## V3.0 MIT byte order (DIFFERENT from classic MIT)
+**Kp first**, not position first:
+```
+byte0 = Kp[11:4]
+byte1 = Kp[3:0]|Kd[11:8]
+byte2 = Kd[7:0]
+byte3 = pos[15:8]
+byte4 = pos[7:0]
+byte5 = vel[11:4]
+byte6 = vel[3:0]|tau[11:8]
+byte7 = tau[7:0]
+```
+
+## Feedback frame (8 bytes, plain int16 + temp + error)
+- bytes 0–1: int16 position × 0.1 → degrees
+- bytes 2–3: int16 speed × 10 → ERPM
+- bytes 4–5: int16 current × 0.01 → amps
+- byte 6: int8 MOS temperature (°C)
+- byte 7: uint8 error code (0 = no fault)
+
+## R-Link "CAN Mode" setting (clarification, verified V3.0.1 §3.1.1.1)
+`Periodic Feedback` vs `Query-Reply` (R-Link UI calls the latter
+"Inquiry Feedback") selects feedback **delivery** only. Periodic =
+auto-broadcast at CAN Fdb Rate; Query-Reply = only after a command.
+It does **NOT** select MIT vs Servo. Servo packet types (0–7) and MIT
+(packet type 8) are available **simultaneously** on the bus — no
+mode-switch exists.
+
+## AK60-6 V3.0 KV80 parameter ranges (manual §4.2)
+`P_MAX=12.56 rad, V_MAX=60 rad/s, T_MAX=12 N·m, Kp 0–500, Kd 0–5`.
+These differ from TMotorCANControl (V=50, T=15) and from the
+`CUBEMARS_LIMITS` table in `motor_config.py` (V=45, T=15).
+
+## Hardware: USB-to-CAN adapter for V3.0 driver
+- Waveshare USB-CAN-A or DSD TECH Canable; Linux `gs_usb` driver.
+- Bring up: `sudo ip link set can0 up type can bitrate 1000000`.
+- Use `python-can` SocketCAN backend.
+
+## Compatibility note
+- `src/cubemars_bus.py` uses **classic** MIT (position-first, standard
+  11-bit ID, HDSC serial transport). **V3.0 firmware ignores standard
+  11-bit frames entirely** — it only listens on extended 29-bit IDs.
+  So `cubemars_bus.py` will NOT work with V3.0 motors regardless of
+  R-Link settings. Use `ak_v3_can.py` (SocketCAN) or `ak_v3_serial.py`
+  (experimental HDSC ext-frame) for V3.0.
+- Therefore `tests/cubemars/00_sanity_check_legacy.py` getting 0
+  responses from a V3.0 motor is EXPECTED and tells us nothing about
+  hardware health. Use R-Link UART (CubeMarsTool) to verify the motor
+  is alive — it bypasses CAN entirely.
+- Never delete `cubemars_bus.py` without verifying which firmware
+  revision the bench motor is running (V2.x classic firmware still
+  supports it).
 
 ---
 

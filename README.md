@@ -32,6 +32,11 @@ conda activate actuators
 # Core dependencies (all three drivers)
 pip install numpy pyserial
 
+# CubeMars V3.0 with SocketCAN adapter (Canable / Waveshare) — optional
+# Only needed if using ak_v3_can.py with a SocketCAN-compatible USB-CAN adapter.
+# NOT needed for legacy MIT mode (cubemars_bus.py) or HDSC adapter (ak_v3_serial.py).
+pip install python-can
+
 # AS5048A encoder only — must be installed system-wide for root (spidev requires root on Jetson)
 sudo pip3 install spidev
 ```

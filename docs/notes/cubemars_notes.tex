@@ -479,6 +479,203 @@ bus.write("goal_position", {"j1": target_q}, kp=60, kd=2.0)
 \end{lstlisting}
 
 % =========================================================================
+\section{Multi-motor hardware wiring and power distribution}
+\label{sec:hardware}
+% =========================================================================
+
+\subsection{Single motor (bench configuration)}
+
+The bench configuration uses one AK60-6 motor connected to a Jetson Nano
+via a single HDSC USB-to-CAN adapter:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Signal / Power & Source & Destination \\
+\midrule
+USB data       & Jetson USB Type-A & HDSC USB Type-C \\
+CAN\,H         & HDSC adapter       & Motor CAN connector \\
+CAN\,L         & HDSC adapter       & Motor CAN connector \\
+$+48\text{V}$  & PSU (+) 25--30\,A   & Motor XT30 connector (+) \\
+GND            & PSU (−)            & Motor XT30 connector (−) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Power supply requirements: $48\text{V}$ rated, $\ge 15\text{A}$ continuous.
+CAN termination: $120\,\Omega$ resistor between CAN\,H and CAN\,L at
+the motor end.
+
+\subsection{Two motors (parallel configuration)}
+
+Two CubeMars motors can be operated simultaneously on a single CAN bus
+by assigning them different CAN IDs via R-Link.  \textbf{Key principle:}
+both motors share the same CAN\,H/CAN\,L wires (daisy-chained) and
+receive power from the same $48\text{V}$ supply in parallel.
+
+\subsubsection{Power distribution (star-point grounding)}
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+Signal & Topology & Notes \\
+\midrule
+$+48\text{V}$ & Parallel  & Both motor XT30(+) connect to PSU(+) \\
+GND (star)    & Common junction & Both motor XT30(−) connect to single \\
+              &           & junction point (``star''), then to PSU(−) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \textbf{star point} is a central ground junction where both motor
+return wires connect before returning to the PSU negative terminal.
+This topology prevents ground loops and reduces noise on the CAN bus
+(important for CAN signal integrity).
+
+\paragraph{Complete wiring diagram (Jetson to dual motors with power distribution):}
+
+\vspace{0.5cm}
+\begin{center}
+\begin{tikzpicture}[scale=0.9, every node/.style={font=\footnotesize},
+  box/.style={draw=black!50, rounded corners=3pt, inner sep=5pt,
+              text width=2.5cm, align=center, minimum height=0.9cm},
+  small_box/.style={draw=black!40, rounded corners=2pt, inner sep=3pt,
+                     text width=2.0cm, align=center, minimum height=0.7cm},
+  component/.style={box}]
+
+  % =================== TOP ROW: JETSON & CABLE & ADAPTER ===================
+  \node[component, fill=blue!8] (jet) at (0, 8) {Jetson Nano\\USB Type-A};
+  
+  \node[component, fill=cyan!5] (cable) at (3.5, 8) {USB Cable\\Type-A to\\Type-C};
+  
+  \node[component, fill=orange!8] (adp) at (7, 8) {HDSC USB-to-CAN\\Adapter\\(921600 baud)};
+  
+  % =================== CAN BUS LAYER ===================
+  \node[component, fill=purple!6] (canbus) at (7, 5.5) {CAN Bus (1 Mbps)\\CAN\_H, CAN\_L\\(twisted pair)};
+  
+  % =================== MOTORS ===================
+  \node[component, fill=green!8] (m1) at (10.5, 6.8) {Motor J1\\AK60-6\\XT30 + CAN};
+  \node[component, fill=green!8] (m2) at (10.5, 4.2) {Motor J2\\AK60-6\\XT30 + CAN};
+  
+  % =================== POWER SUPPLY ===================
+  \node[component, fill=red!6] (psu) at (0, 2.5) {48V Power Supply\\25--30A rated};
+  
+  \node[small_box, fill=red!10] (psu_pos) at (-0.7, 3.8) {PSU\\$+48\text{V}$};
+  \node[small_box, fill=red!10, draw=red!50, line width=1.5pt] (psu_gnd) at (0.7, 1.2) {PSU GND\\(star)};
+  
+  % =================== STAR POINT ===================
+  \node[circle, draw=red!60, line width=2.5pt, inner sep=5pt, fill=red!5] (star) at (6, 2) {$\star$};
+  \node[font=\tiny, color=red!70, below=2pt of star] {common\\ground};
+  
+  % =================== CONNECTIONS: DATA FLOW ===================
+  \draw[-Stealth, thick, blue!60]
+    (jet.east) -- node[above, font=\tiny]{USB} (cable.west);
+  
+  \draw[-Stealth, thick, blue!60]
+    (cable.east) -- node[above, font=\tiny]{Type-C} (adp.west);
+  
+  % USB-to-CAN to CAN bus
+  \draw[-Stealth, thick, orange!70]
+    (adp.south) -- node[right, font=\tiny]{CAN H/L} (canbus.north);
+  
+  % CAN bus to motors
+  \draw[-Stealth, thick, purple!70, bend left=15]
+    (canbus.east) -- node[above, font=\tiny]{CAN\_H/L} (m1.west);
+  \draw[-Stealth, thick, purple!70, bend right=15]
+    (canbus.east) -- node[below, font=\tiny]{CAN\_H/L} (m2.west);
+  
+  % =================== CONNECTIONS: POWER DISTRIBUTION ===================
+  % PSU + to Motors (parallel)
+  \draw[-Stealth, very thick, red!70]
+    (psu_pos.east) -- ++(0.5, 0) 
+    -- (10, 7.2) node[pos=0.7, right, font=\tiny]{$+48\text{V}$}
+    -- (m1.west);
+    
+  \draw[-Stealth, very thick, red!70]
+    (psu_pos.east) -- ++(0.5, 0)
+    -- (10, 3.8) node[pos=0.7, right, font=\tiny]{$+48\text{V}$}
+    -- (m2.west);
+  
+  % PSU GND to star point
+  \draw[-Stealth, very thick, red!60]
+    (psu_gnd.east) -- node[below, font=\tiny]{GND} (star.west);
+  
+  % Motors GND to star point
+  \draw[Stealth-, very thick, red!50]
+    (m1.south) -- ++(0, -0.4) -- (6.5, 2.8) -- (star.east);
+  \draw[Stealth-, very thick, red!50]
+    (m2.south) -- ++(0, 0.4) -- (6.5, 1.2) -- (star.east);
+    
+  % =================== LEGEND / ANNOTATIONS ===================
+  \node[font=\tiny, text=blue!60, below left] at (0, 0.8) {\textbf{Legend:}};
+  \node[font=\tiny, text=blue!60] at (0, 0.3) {Blue: USB/data  |  Orange: CAN protocol  |  Red: Power/ground};
+
+\end{tikzpicture}
+\end{center}
+
+\subsubsection{Power supply sizing}
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+Motors & Rated current each & Total continuous \\
+\midrule
+1$\times$AK60-6  & 10\,A & 10\,A \\
+2$\times$AK60-6  & 10\,A & \textbf{20\,A} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Recommendation:} use a $48\text{V}$ power supply rated for
+\emph{at least} 25--30\,A continuous.  This provides 1.25--1.5$\times$
+safety margin above the 20\,A sum and accommodates transient current
+spikes during acceleration.
+
+\subsubsection{CAN bus termination (two motors)}
+
+With two motors on the same CAN bus, place a single $120\,\Omega$
+termination resistor at the far end (typically at the last motor or at
+the HDSC adapter).  Do \emph{not} place terminators at both ends on a
+short bus (a few meters or less) as this can introduce reflection issues.
+
+\subsubsection{Configuration for two motors in Python}
+
+Update \texttt{src/motor\_config.py} to define both motors:
+
+\begin{lstlisting}
+DEFAULT_CUBEMARS_BENCH_CONFIG = CubeMarsBusConfig(
+    port="/dev/ttyACM0",
+    baudrate=921600,
+    motors={
+        "j1": CubeMarsMotorConfig(can_id=0x01, model="AK60-6"),
+        "j2": CubeMarsMotorConfig(can_id=0x02, model="AK60-6"),
+    },
+)
+\end{lstlisting}
+
+Then in test scripts, use the same context-manager idiom:
+
+\begin{lstlisting}
+with open_cubemars_bus() as bus:
+    # Read both motors in one pass
+    state = bus.read_state()
+    q1, dq1, tau1 = state["j1"]
+    q2, dq2, tau2 = state["j2"]
+    
+    # Command both motors simultaneously
+    bus.write("goal_position",
+              {"j1": 1.57, "j2": -0.5},
+              kp=30, kd=1.0)
+\end{lstlisting}
+
+Each motor responds to its own CAN ID; the shared HDSC adapter
+multiplexes all frames on the same serial port.
+
+\textbf{Important:} Run \texttt{tests/cubemars/00\_scan\_can\_id.py}
+on each motor individually to confirm its CAN ID before adding it to
+the config dict.
+
+% =========================================================================
 \section{HDSC USB-to-CAN adapter -- frame envelope}
 \label{sec:hdsc}
 % =========================================================================
@@ -680,6 +877,180 @@ with TMotorManager_mit_can(motor_type="AK80-9", device="can0",
 discipline.  Our \texttt{cubemars\_bus.py} avoids this by writing the
 HDSC proprietary 30-byte envelope directly, which is more reliable on
 Jetson without kernel module setup.
+
+% =========================================================================
+\section{V3.0 driver-board protocol (\texttt{AK Series Manual V3.0.1})}
+\label{sec:v3-protocol}
+% =========================================================================
+
+The CubeMars \textbf{V3.0} driver board uses a unified extended-frame
+CAN protocol that supersedes the older Damiao-style standard-frame MIT
+protocol assumed by \texttt{cubemars\_bus.py} and by the
+\texttt{TMotorCANControl} library.  Both servo modes and force-control
+(MIT) mode share one identifier scheme.
+
+\subsection{Unified extended-ID layout}
+
+\begin{center}
+\texttt{CAN\_ID (29-bit)} \;=\; \texttt{(PACKET\_TYPE \(\ll\) 8) \;|\; ESC\_ID}
+\end{center}
+
+The packet type selects the control mode.  All eight packet types share
+the same 29-bit ID slot and the same 8-byte DLC.
+
+\begin{center}\small
+\begin{tabular}{rlll}
+\toprule
+\textbf{PACKET\_TYPE} & \textbf{Name} & \textbf{Section} &
+\textbf{CAN\_ID for ESC=0x68} \\
+\midrule
+0 & \texttt{SET\_DUTY}           & \S4.1.1 & \texttt{0x00000068} \\
+1 & \texttt{SET\_CURRENT}        & \S4.1.2 & \texttt{0x00000168} \\
+2 & \texttt{SET\_CURRENT\_BRAKE} & \S4.1.3 & \texttt{0x00000268} \\
+3 & \texttt{SET\_RPM}            & \S4.1.4 & \texttt{0x00000368} \\
+4 & \texttt{SET\_POS}            & \S4.1.5 & \texttt{0x00000468} \\
+5 & \texttt{SET\_ORIGIN\_HERE}   & \S4.1.6 & \texttt{0x00000568} \\
+6 & \texttt{SET\_POS\_SPD}       & \S4.1.7 & \texttt{0x00000668} \\
+8 & \texttt{SET\_MIT}            & \S4.2   & \texttt{0x00000868} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{R-Link ``CAN Mode'' setting}
+
+This selects feedback delivery only -- \emph{not} which control modes
+the firmware accepts.  Both Servo and MIT commands work in either setting.
+
+\begin{center}\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Inquiry Feedback}  & Motor replies with one feedback frame for each command received. \\
+\textbf{Periodic Feedback} & Motor broadcasts feedback at \texttt{CAN Fdb Rate} (default 50\,Hz). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Force-control (MIT) frame layout -- V3.0 byte order}
+
+The V3.0 MIT byte order is \textbf{Kp first}, which differs from the
+classic mini-cheetah layout (position first) used by Damiao and earlier
+T-Motor firmware:
+
+\begin{center}\small
+\begin{tabular}{cl}
+\toprule
+\textbf{Byte} & \textbf{Content} \\
+\midrule
+0 & \texttt{Kp[11:4]}                       \\
+1 & \texttt{Kp[3:0] | Kd[11:8]}             \\
+2 & \texttt{Kd[7:0]}                        \\
+3 & \texttt{pos[15:8]}                      \\
+4 & \texttt{pos[7:0]}                       \\
+5 & \texttt{vel[11:4]}                      \\
+6 & \texttt{vel[3:0] | tau[11:8]}           \\
+7 & \texttt{tau[7:0]}                       \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Sub-modes (selected by which fields are nonzero).}
+\begin{itemize}
+  \item \textbf{Position}: \(K_p > 0\), \(K_d > 0\), set \(p_{des}\).
+        Never \(K_d = 0\).
+  \item \textbf{Velocity}: \(K_p = 0\), \(K_d > 0\), set \(v_{des}\).
+  \item \textbf{Torque}  : \(K_p = 0\), \(K_d = 0\), set \(\tau_{ff}\).
+\end{itemize}
+
+\subsection{Parameter ranges (manual \S4.2 table)}
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Model} & \textbf{KV} &
+\(P_{\max}\) (rad) & \(V_{\max}\) (rad/s) & \(T_{\max}\) (N\,m) &
+\(K_p\) range & \(K_d\) range \\
+\midrule
+AK10-9   & 60  & 12.56 & 28  & 54  & 0--500 & 0--5 \\
+\textbf{AK60-6}   & \textbf{80}  & \textbf{12.56} & \textbf{60}  & \textbf{12}  & 0--500 & 0--5 \\
+AK70-9   & 60  & 12.56 & 30  & 32  & 0--500 & 0--5 \\
+AK80-9   & 100 & 12.56 & 65  & 18  & 0--500 & 0--5 \\
+AKE60-8  & 80  & 12.56 & 40  & 15  & 0--500 & 0--5 \\
+AKE80-8  & 30  & 12.56 & 20  & 35  & 0--500 & 0--5 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{For the bench AK60-6 V3.0 KV80}: \(V_{\max} = 60\) rad/s,
+\(T_{\max} = 12\) N\,m.  Note these differ from the values hard-coded
+in TMotorCANControl (\(V_{\max} = 50\), \(T_{\max} = 15\)) and the
+older Damiao-style assumption (\(V_{\max} = 45\), \(T_{\max} = 15\)).
+
+\subsection{Feedback frame (extended ID \texttt{0x2968} for ESC=0x68)}
+
+\begin{center}\small
+\begin{tabular}{cll}
+\toprule
+\textbf{Bytes} & \textbf{Type} & \textbf{Meaning} \\
+\midrule
+0--1 & \texttt{int16\_t}  & position (\(\times 0.1\) deg)         \\
+2--3 & \texttt{int16\_t}  & speed (\(\times 10\) ERPM)            \\
+4--5 & \texttt{int16\_t}  & current (\(\times 0.01\) A)           \\
+6    & \texttt{int8\_t}   & driver-board temperature (\(^\circ\)C)\\
+7    & \texttt{uint8\_t}  & error code (0 = no fault)             \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Worked example -- send MIT torque 1\,N\,m, ESC\_ID = 104}
+
+Using the V3.0 layout, with \(K_p = K_d = 0\), \(p_{des} = v_{des} = 0\),
+\(\tau_{ff} = 1\) N\,m for an AK60-6 (\(T_{\max}=12\)):
+
+\begin{align*}
+t_{int} &= \mathrm{float\_to\_uint}(1.0,\, -12,\, 12,\, 12) = 2218 \\
+p_{int} &= 32767  \quad\text{(centre of 16-bit unsigned, $p=0$)} \\
+v_{int} &= 2047   \quad\text{(centre of 12-bit unsigned, $v=0$)} \\
+kp_{int} &= 0,\; kd_{int} = 0
+\end{align*}
+
+Resulting 8-byte payload: \texttt{00 00 00 7F FF 7F F8 AA}, sent at
+extended CAN ID \texttt{0x00000868} (i.e.\ \texttt{(8 \(\ll\) 8) | 104}).
+
+\subsection{Python driver: \texttt{src/ak\_v3\_can.py}}
+
+A Python port of the official \texttt{AK-V3.ino} sketch is shipped at
+\texttt{src/ak\_v3\_can.py}.  It uses \texttt{python-can} on top of the
+Linux SocketCAN interface (\texttt{can0}), which is exposed by the
+Waveshare / Canable USB-CAN adapter via the in-kernel \texttt{gs\_usb}
+driver.  Quick usage:
+
+\begin{lstlisting}[language=Python]
+from ak_v3_can import AkV3Motor, ensure_can0_up
+import can
+
+ensure_can0_up(1_000_000)
+bus = can.interface.Bus(channel="can0", bustype="socketcan")
+motor = AkV3Motor(bus, can_id=104, model="AK60-6")   # 104 = 0x68
+
+# Position mode: hold 90 deg with moderate stiffness.
+motor.set_mit(p_des=1.57, v_des=0.0, kp=30.0, kd=1.0, t_ff=0.0)
+
+while True:
+    if motor.poll_feedback(timeout=0.05):
+        print(motor.pos_deg, motor.spd_erpm, motor.current_a)
+\end{lstlisting}
+
+\subsection{Compatibility note}
+
+The bench-tested HDSC + \texttt{cubemars\_bus.py} stack (standard
+11-bit CAN ID, classic position-first MIT byte order) is \emph{not}
+the protocol the V3.0 manual describes.  Either:
+\begin{itemize}
+  \item the bench firmware predates the V3.0.1 manual revision and
+        still accepts the legacy MIT format on standard frames; or
+  \item it accepts both formats in parallel.
+\end{itemize}
+For new code on a fresh V3.0 board, prefer \texttt{ak\_v3\_can.py}.
 
 % =========================================================================
 \section{Quick-start checklist}

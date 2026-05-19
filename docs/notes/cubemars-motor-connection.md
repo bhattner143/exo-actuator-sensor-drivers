@@ -1,0 +1,58 @@
+```mermaid
+flowchart LR
+
+subgraph Cable["USB Cable (Type-A to Type-C)"]
+    UA["Type-A<br/>(to Jetson)"]
+    UC["Type-C<br/>(to Adapter)"]
+end
+
+subgraph Adapter["HDSC USB-to-CAN Adapter"]
+    USBC["USB Type-C<br/>(power + data)"]
+    CAN["CAN Output<br/>H / L"]
+end
+
+subgraph Bus["CAN Bus (shared H/L pair)"]
+    H["CAN_H<br/>(twisted pair)"]
+    L["CAN_L<br/>(twisted pair)"]
+end
+
+subgraph M1["Motor J1 - AK60-6"]
+    M1XT["XT30 Connector<br/>(+48V, GND)"]
+    M1CAN["CAN Interface<br/>H / L"]
+end
+
+subgraph M2["Motor J2 - AK60-6"]
+    M2XT["XT30 Connector<br/>(+48V, GND)"]
+    M2CAN["CAN Interface<br/>H / L"]
+end
+
+subgraph PSU["48V Power Supply<br/>25-30A"]
+    PSU_POS["+48V"]
+    PSU_GND["GND ★<br/>(star point)"]
+end
+
+USB["Jetson USB Port"] -->|Type-A| UA
+UA -->|Type-C| UC
+UC --> USBC
+USBC --> CAN
+
+CAN -->|CAN_H| H
+CAN -->|CAN_L| L
+
+H -->|CAN_H| M1CAN
+H -->|CAN_H| M2CAN
+L -->|CAN_L| M1CAN
+L -->|CAN_L| M2CAN
+
+PSU_POS -->|+48V| M1XT
+PSU_POS -->|+48V| M2XT
+
+PSU_GND -->|GND| M1XT
+PSU_GND -->|GND| M2XT
+
+style Adapter fill:#fff3e0
+style Bus fill:#f3e5f5
+style M1 fill:#e8f5e9
+style M2 fill:#e8f5e9
+style PSU fill:#fce4ec
+```

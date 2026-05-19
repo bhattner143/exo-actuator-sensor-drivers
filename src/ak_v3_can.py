@@ -1,8 +1,20 @@
-"""ak_v3_can.py -- Python equivalent of ``AK-V3.ino`` using python-can (SocketCAN).
+"""ak_v3_can.py -- Python equivalent of ``AK-V3.ino`` using python-can.
 
 Targets CubeMars AK-series **V3.0 driver-board firmware** as documented in
-``AK Series Module Product Manual V3.0.1``.  Designed for the Waveshare /
-Canable USB-to-CAN adapter exposed as Linux ``can0``.
+``AK Series Module Product Manual V3.0.1``.
+
+Supports two CAN adapters:
+
+* **gs_usb / candleLight firmware** (DSD TECH SH-C30A, Canable, Waveshare
+  USB-CAN-A): USB ID ``1d50:606f``.  Uses python-can ``gs_usb`` backend via
+  libusb -- **no gs_usb kernel module required**::
+
+      bus = open_gs_usb_bus(bitrate=1_000_000)   # recommended on Jetson
+
+* **SocketCAN** (Jetson built-in mttcan or any SocketCAN interface)::
+
+      ensure_can0_up(1_000_000)
+      bus = can.interface.Bus(channel="can0", bustype="socketcan")
 
 V3.0 firmware protocol summary
 ------------------------------
@@ -79,9 +91,29 @@ from ak_v3_common import (
 # Bus management
 # ---------------------------------------------------------------------------
 def ensure_can0_up(bitrate: int = 1_000_000, channel: str = "can0") -> None:
-    """Bring ``can0`` up at the given bitrate (idempotent)."""
+    """Bring a SocketCAN interface up at the given bitrate (idempotent).
+
+    Only needed when using the Jetson built-in mttcan (``can0``) or another
+    SocketCAN interface.  Not required for the gs_usb backend.
+    """
     os.system(f"sudo ip link set {channel} down 2>/dev/null")
     os.system(f"sudo ip link set {channel} up type can bitrate {bitrate}")
+
+
+def open_gs_usb_bus(bitrate: int = 1_000_000, index: int = 0) -> can.BusABC:
+    """Open the first gs_usb / candleLight device (e.g. DSD TECH SH-C30A).
+
+    Uses python-can's ``gs_usb`` backend which communicates directly via
+    libusb -- no ``gs_usb`` kernel module is required on the host system.
+
+    Args:
+        bitrate: CAN bus bitrate in bits/s (default 1 Mbps).
+        index:   Which gs_usb device to open if multiple are attached.
+
+    Returns:
+        An open ``can.BusABC`` ready for use with ``AkV3Motor``.
+    """
+    return can.Bus(interface="gs_usb", channel=index, bitrate=bitrate, index=index)
 
 
 class AkV3Motor:
@@ -225,21 +257,28 @@ class AkV3Motor:
     def poll_feedback(self, timeout: float = 0.05) -> bool:
         """Block until one feedback frame for this motor arrives."""
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            msg = self.bus.recv(timeout=max(0.0, deadline - time.monotonic()))
-            if msg is None:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return False
+            # Minimum 10 ms chunk so recv() never gets timeout=0
+            # (gs_usb backend blocks forever on timeout=0).
+            msg = self.bus.recv(timeout=max(0.01, min(remaining, 0.05)))
+            if msg is None:
+                continue
             if self.parse_feedback(msg):
                 return True
-        return False
 
 
 # ---------------------------------------------------------------------------
 # Convenience top-level demo (mirrors the AK-V3.ino loop())
 # ---------------------------------------------------------------------------
 def _demo() -> None:
-    ensure_can0_up(1_000_000)
-    bus = can.interface.Bus(channel="can0", bustype="socketcan")
+    # Use gs_usb backend (DSD TECH SH-C30A or Canable) -- no kernel module needed.
+    # To use Jetson built-in CAN instead:
+    #   ensure_can0_up(1_000_000)
+    #   bus = can.interface.Bus(channel="can0", bustype="socketcan")
+    bus = open_gs_usb_bus(bitrate=1_000_000)
     motor = AkV3Motor(bus, can_id=104, model="AK60-6")     # 104 == 0x68
 
     # 1 N.m open-loop torque pulse for 100 ms, mirroring the .ino default:

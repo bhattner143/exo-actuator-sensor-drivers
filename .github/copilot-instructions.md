@@ -6,7 +6,8 @@ components sharing one Jetson Orin Nano bench:
 1. **Damiao DM-J4310-2EC V1.1** -- geared servo motor (24 V, CAN @ 1 Mbps,
    UART debug @ 921600 bps, 10:1 gearbox).
 2. **CubeMars AK60-6 V3.0 KV80** -- brushless servo motor (18-52 V, CAN @ 1 Mbps,
-   MIT mode only via `cubemars_bus.py`; firmware configured with R-Link).
+   V3.0 firmware; controlled via `ak_v3_can.py` + `AkV3Bench` over SocketCAN
+   `can1` (DSDTech SH-C30A, gs_usb); ESC_ID = 0x02).
 3. **AS5048A** -- 14-bit absolute magnetic encoder (SPI mode 1, up to 10 MHz,
    connected to Jetson SPI0 via device-tree overlay).
 
@@ -23,18 +24,31 @@ workspace.
   `CubeMarsBusConfig`, `CUBEMARS_LIMITS`, `DEFAULT_BENCH_CONFIG` (Damiao bench:
   port `/dev/ttyACM0`, `can_id=0x01`, `master_id=0x11`), and
   `DEFAULT_CUBEMARS_BENCH_CONFIG` (CubeMars AK60-6 V3.0 KV80: port `/dev/ttyACM0`,
-  `can_id=0x04`).
+  `can_id=0x02` — legacy config, not used by V3.0 tests).
 - `src/damiao_bus.py` -- LeRobot-style `DamiaoBus` wrapper around DM_CAN.
   Exposes `connect()`, `disconnect()`, `is_connected`, `enable_torque()`,
   `disable_torque()`, `read()`, `write()`, `read_state()`, `set_zero()`,
   `switch_mode()`, `__enter__`/`__exit__`.
-- `src/cubemars_bus.py` -- self-contained `CubemarsMotorsBus` for CubeMars
-  AK-series; does **not** use `DM_CAN.MotorControl`. Same interface as
-  `DamiaoBus`.
-- `src/_common.py` -- test-script helpers: `open_bus()` (returns a
-  `DamiaoBus` context manager), `open_cubemars_bus()` (returns a
-  `CubemarsMotorsBus` context manager), `open_motor()` + `safe_disable_close()`
-  (legacy tests 01/02 only).
+- `src/cubemars_bus.py` -- **LEGACY** `CubemarsMotorsBus` (classic 11-bit HDSC
+  serial transport). Does NOT work with V3.0 firmware (motor ignores standard
+  11-bit frames). Kept for reference / V2.x compatibility.
+- `src/ak_v3_can.py` -- **PRIMARY** CubeMars V3.0 driver. Class `AkV3Motor`
+  (SocketCAN + python-can). Methods: `set_mit()`, `set_position_deg()`,
+  `set_rpm()`, `set_duty()`, `set_current()`, `set_brake_current()`,
+  `set_origin()`, `set_pos_spd()`, `parse_feedback()`, `poll_feedback()`.
+  Uses `ak_v3_common.py` for bit-packing and limits.
+- `src/ak_v3_common.py` -- Shared V3.0 constants and helpers: `AK_V3_LIMITS`
+  table, `float_to_uint()`, `uint_to_float()`, packet-type constants.
+- `src/ak_v3_serial.py` -- Experimental HDSC serial transport for V3.0
+  (extended frames). Not used in primary tests.
+- `src/_common.py` -- test-script helpers:
+  - `open_bus()` → `DamiaoBus` context manager (Damiao tests 03–10)
+  - `open_ak_v3_bench()` → `AkV3Bench` context manager (**primary CubeMars helper**)
+  - `AkV3Bench` -- wraps `AkV3Motor` on SocketCAN `can1`; mirrors DamiaoBus API:
+    `connect()`, `disconnect()`, `write()`, `read_state()`, `read_raw()`,
+    `set_zero()`, `__enter__`/`__exit__`
+  - `open_cubemars_bus()` → `CubemarsMotorsBus` (legacy; V3.0 hardware ignores it)
+  - `open_motor()` + `safe_disable_close()` (Damiao raw driver, tests 01/02 only)
 - `src/as5048a.py` -- AS5048A encoder driver (context manager). Key methods:
   `read_angle_raw()`, `read_angle_deg()`, `read_diagnostics()`,
   `read_magnitude()`, `set_zero(burn_otp=False)`, `clear_error()`.
@@ -45,10 +59,9 @@ workspace.
 
 ### Other directories
 - `tests/damiao/` -- Damiao numbered test scripts 01–10 (see table below).
-- `tests/cubemars/` -- CubeMars AK-series test scripts 01–07.
+- `tests/cubemars/` -- CubeMars AK-series test scripts (00_* probes + 01–07 V3.0 tests).
 - `tests/encoder/` -- AS5048A encoder test scripts 00–04.
-- `docs/DM-J4310-en.pdf` -- official Damiao motor manual.
-- `docs/CubeMars-AK-Series.pdf` -- official CubeMars AK-series manual.
+- `docs/datasheets/` -- Official datasheets (cubemars/, damaio/, encoder/, USB-to-CAN/).
 - `docs/notes/dm_j4310_notes.tex` -- Damiao internal notes / audit. Read first
   when asked anything about the Damiao motor. **Must be updated and recompiled
   after any structural change to the repo or protocol** (see maintenance rule).
@@ -56,7 +69,16 @@ workspace.
   Read first when asked anything about the encoder. **Must be updated and
   recompiled after changes to `src/as5048a.py`, `src/encoder_config.py`, or
   `tests/encoder/`** (see maintenance rule).
-- `docs/notes/cubemars_notes.tex` -- CubeMars notes file. **Created after initial hardware bring-up (12 May 2026).** Read first when asked anything about the CubeMars motor. **Must be updated and recompiled after changes to `src/cubemars_bus.py`, `src/motor_config.py` (CubeMars sections), or `tests/cubemars/`.** Compile: `cd docs/notes && pdflatex -interaction=nonstopmode cubemars_notes.tex` (twice).
+- `docs/notes/cubemars_notes.tex` -- CubeMars notes file. Read first when asked
+  anything about the CubeMars motor. **Must be updated and recompiled after
+  changes to `src/ak_v3_can.py`, `src/ak_v3_common.py`, `src/motor_config.py`
+  (CubeMars sections), or `tests/cubemars/`.** Compile command (twice):
+  `cd docs/notes && pdflatex -interaction=nonstopmode cubemars_notes.tex`
+- `install_gs_usb.sh` -- Builds + installs `gs_usb.ko` out-of-tree on Tegra
+  kernel. Required once on a fresh Jetson to enable DSDTech SH-C30A on can1.
+- `test_can_adapter_dstech.sh` -- Verifies DSDTech adapter and SocketCAN loopback.
+  Usage: `bash test_can_adapter_dstech.sh can1`
+- `docs/notes/gs_usb_install.md` -- Full gs_usb installation guide.
 - `old/motor-control-routine/` -- vendor examples for C, C#, MATLAB, ROS, STM32 (archived).
 - `old/` -- archived root-level files (not active).
 - `jetson-orin-spi-overlay-guide/` -- DTS overlay guide and install scripts.
@@ -182,152 +204,131 @@ Both `DamiaoBus` and `CubemarsMotorsBus` implement the full contract:
 
 ## Hardware facts
 - Allowable voltage: 18–52 V. Rated 48 V, rated current 10 A, max 30 A.
-- CAN bus: 1 Mbps, **extended frame**, same HDSC USB-to-CAN adapter as Damiao.
-- CAN ID confirmed via scan: **0x68 = 104 decimal** (set via R-Link).
-- Feedback CAN ID = motor's own ESC_ID (not a separate Master ID).
-- **MIT mode only** in `cubemars_bus.py` — servo modes (Pos-Vel, Speed,
-  Duty) require the CubeMars upper-computer or a separate servo-mode driver.
-- **R-Link "CAN Mode" = feedback delivery only** (per V3.0.1 manual §3.1.1.1):
-  `Periodic Feedback` = motor auto-broadcasts at CAN Fdb Rate.
-  `Query-Reply` (R-Link mistranslates as "Inquiry Feedback") = motor replies only after a command.
-  Both modes accept MIT and Servo commands. NOT a mode-switch.
-- Limits for MIT bit-packing: `P_MAX=12.5 rad, V_MAX=45 rad/s, T_MAX=15 N.m`.
-- `Kp ∈ [0, 500]`, `Kd ∈ [0, 5]`. **Never Kd=0 in position mode.**
-- No firmware parameter read API (unlike Damiao). Limits are hard-coded in
-  `CUBEMARS_LIMITS["AK60-6"]` in `motor_config.py`.
+- CAN bus: 1 Mbps, **CAN 2.0B extended frame** (29-bit IDs).
+- Adapter: **DSDTech SH-C30A** (USB ID `1d50:606f`), candleLight/gs_usb family.
+  Appears as `can1` after `gs_usb` kernel module is loaded (see `install_gs_usb.sh`).
+- ESC_ID confirmed: **0x02** (set via R-Link; verify with `tests/cubemars/00_scan_can_id.py`).
+- Feedback CAN ID: `(0x29 << 8) | ESC_ID` = `0x2902` for ESC=0x02.
 - Calibration (Motor Identification + Encoder Identification) done once via
-  R-Link before first use. Parameters saved as `.AppParams` / `.McParams`
-  files. Re-calibrate only after hardware reassembly or firmware update.
+  R-Link before first use. Re-calibrate only after hardware reassembly or
+  firmware update.
 
-## MIT frame (identical to Damiao)
-```
-Byte 0 : q[15:8]
-Byte 1 : q[7:0]
-Byte 2 : dq[11:4]
-Byte 3 : dq[3:0] | Kp[11:8]
-Byte 4 : Kp[7:0]
-Byte 5 : Kd[11:4]
-Byte 6 : Kd[3:0] | tau[11:8]
-Byte 7 : tau[7:0]
-```
-Feedback layout (8-byte payload, D[0]=ESC_ID, D[1:3]=POS, D[3:5]=VEL,
-D[4:6]=TAU, D[6]=T_MOS, D[7]=T_ROTOR).
+## V3.0 unified extended-ID scheme
+- `CAN_ID = (PACKET_TYPE << 8) | ESC_ID`
+- Packet types (from `ak_v3_common.py`):
+  `0=DUTY, 1=CURRENT, 2=BRAKE, 3=RPM, 4=POS, 5=ORIGIN, 6=POS_SPD, 8=MIT`
+- Feedback packet type: `0x29` (auto-broadcast or query-reply, per R-Link CAN Mode).
 
-## CubeMars Bus API (tests/cubemars/ 01–07)
+## V3.0 MIT byte order (Kp-first — different from Damiao/classic CubeMars)
+```
+byte0 = Kp[11:4]
+byte1 = Kp[3:0] | Kd[11:8]
+byte2 = Kd[7:0]
+byte3 = pos[15:8]
+byte4 = pos[7:0]
+byte5 = vel[11:4]
+byte6 = vel[3:0] | tau[11:8]
+byte7 = tau[7:0]
+```
+Implemented in `AkV3Motor.set_mit()` — do not re-derive, just call the method.
+
+## V3.0 Feedback frame (8 bytes, big-endian)
+- bytes 0–1: int16 × 0.1 → degrees
+- bytes 2–3: int16 × 10 → ERPM
+- bytes 4–5: int16 × 0.01 → amps (Iq)
+- byte 6: int8 MOS temperature (°C)
+- byte 7: uint8 error code (0 = no fault)
+
+## AK60-6 V3.0 KV80 parameter ranges (manual §4.2, verified)
+`P_MAX = ±12.56 rad`, `V_MAX = ±60 rad/s`, `T_MAX = ±12 N·m`,
+`Kp ∈ [0, 500]`, `Kd ∈ [0, 5]`.
+These are stored in `AK_V3_LIMITS["AK60-6"]` in `src/ak_v3_common.py`.
+
+## R-Link "CAN Mode" setting
+`Periodic Feedback` = motor auto-broadcasts at CAN Fdb Rate.
+`Query-Reply` (R-Link mistranslates as "Inquiry Feedback") = motor replies only
+after a command. Both modes accept **all** packet types (MIT and servo commands)
+simultaneously. This is feedback delivery only, not a mode-switch.
+
+## CubeMars V3.0 Bus API (tests/cubemars/ 01–07)
 ```python
-from _common import open_cubemars_bus
+from _common import open_ak_v3_bench
 
-with open_cubemars_bus(set_zero=True) as bus:
-    bus.write("goal_position", {"j1": 1.57}, kp=30, kd=1.0)
-    q, dq, tau = bus.read_state()["j1"]
+with open_ak_v3_bench(set_zero=True) as bus:
+    bus.write("goal_position", {"j1": 1.57}, kp=60, kd=1.5)
+    q, dq, ia = bus.read_state()["j1"]   # q=rad, dq=rad/s, ia=amps(Iq)
 ```
-`open_cubemars_bus()` uses `DEFAULT_CUBEMARS_BENCH_CONFIG` (port
-`/dev/ttyACM0`, CAN ID `0x04`). No `mode` argument -- MIT only.
+`open_ak_v3_bench()` opens SocketCAN `can1` and wraps `AkV3Motor(can_id=0x02)`.
+`read_state()` returns `(q_rad, dq_rad_s, current_a)`. No `mode` argument — MIT only.
+`write()` supports the same `data_name` strings as `DamiaoBus`:
+
+| data_name | Mode | Extra kwargs |
+|---|---|---|
+| `goal_position`     | MIT position | `kp`, `kd`, `dq_des`, `tau_ff` |
+| `goal_velocity`     | MIT velocity | `kd`, `tau_ff` |
+| `goal_torque`       | MIT open-loop torque | — |
+| `mit_command`       | Raw MIT pass-through | `kp`, `kd`, `dq_des`, `tau_ff` |
+| `goal_position_deg` | Servo position loop | — (degrees) |
+| `goal_pos_spd`      | Servo pos-vel profile | `dq_des` (ERPM), `acc_erpm_s2` |
+| `goal_speed_erpm`   | Servo speed loop | — |
+| `goal_duty`         | Servo duty cycle | — |
+
+`read_raw()` returns `(pos_deg, spd_erpm, current_a, temp_c, error_code)` for
+debugging without SI unit conversion.
 
 ## Test scripts (tests/cubemars/)
 | File | Purpose |
 |---|---|
-| 01_check_connection.py | Poll 5 feedback frames, confirm non-zero response |
-| 02_mit_position.py     | MIT position hold (Kp/Kd), step to several angles |
-| 03_mit_velocity.py     | MIT velocity tracking (Kd only) |
-| 04_mit_torque.py       | Open-loop torque (keep ≤ 1 N.m unloaded) |
-| 05_kinesthetic_record.py | Hand-guide + save to `demo_trajectory_ak80.csv` |
-| 06_replay_trajectory.py  | Replay that CSV |
+| 00_probe_motor.py         | Raw CAN probe; confirms ESC_ID + feedback decode |
+| 00_scan_can_id.py         | Sweep all ESC IDs; find the motor's ID |
+| 00_loopback_socketcan.py  | SocketCAN loopback self-test |
+| 00_sniff_motor.py         | Passive sniffer: print all extended frames |
+| 00_sanity_check_legacy.py | Legacy HDSC check (expected all-zeros on V3.0) |
+| 01_check_connection.py    | Poll 5 feedback frames, confirm non-zero response |
+| 02_mit_position.py        | MIT position hold (Kp=60 Kd=1.5); sweep ±30° |
+| 03_mit_velocity.py        | MIT velocity tracking (Kd=1.0) |
+| 04_mit_torque.py          | Open-loop torque pulses (≤ 0.5 N·m unloaded) |
+| 05_kinesthetic_record.py  | Hand-guide + save to `demo_trajectory_ak80.csv` |
+| 06_replay_trajectory.py   | Replay CSV with Kp=30 Kd=1.0 |
 | 07_impedance_spring_return.py | Soft spring anchored at zero |
 
-## Critical gotchas (CubeMars)
-1. **No Master ID filter.** `CubemarsMotorsBus` routes feedback by ESC_ID
-   directly (not `master_id`). If the CAN ID is wrong, `read_state()` returns
-   cached zeros silently.
-2. **Calibration required before first use.** Run Motor Identification then
-   Encoder Identification via R-Link with the motor unloaded. Write parameters
-   after. Re-calibrate after rewiring the three-phase wires.
-3. **No mode switch over CAN.** The servo modes (Pos-Vel, Speed, Duty) are
-   only accessible via the upper-computer serial protocol or R-Link. The
-   `cubemars_bus.py` driver is MIT-only.
-4. **Never Kd=0 in position mode.** Same rule as Damiao.
-5. `demo_trajectory_ak80.csv` is the record file for CubeMars kinesthetic
-   teaching (separate from Damiao's `demo_trajectory.csv`).
+All tests 01–07 use `with open_ak_v3_bench() as bus:` — never call
+`AkV3Motor` methods directly in test scripts.
+
+## Adapter setup
+1. Plug DSDTech SH-C30A into USB.
+2. Ensure `gs_usb.ko` is loaded (one-time install via `bash install_gs_usb.sh`).
+3. If can1 is not up: `sudo ip link set can1 up type can bitrate 1000000`
+   (the udev rule in `install_gs_usb.sh` does this automatically on plug-in).
+4. Verify: `bash test_can_adapter_dstech.sh can1`
+
+## Critical gotchas (CubeMars V3.0)
+1. **V3.0 firmware ignores standard 11-bit frames** entirely. The legacy
+   `cubemars_bus.py` (HDSC serial transport) will NOT work. Use `ak_v3_can.py`.
+   `00_sanity_check_legacy.py` returning all-zeros is expected on V3.0 hardware.
+2. **Never Kd=0 in position mode.** Same rule as Damiao.
+3. **ESC_ID = 0x02** (not 0x68). Wrong ID → `read_state()` returns cached zeros
+   silently. Verify with `00_scan_can_id.py` if unsure.
+4. **Calibration required before first use.** Motor Identification + Encoder
+   Identification via R-Link with motor unloaded. Re-calibrate after rewiring.
+5. `demo_trajectory_ak80.csv` is the CubeMars recording file (separate from
+   Damiao's `demo_trajectory.csv`).
+6. **gs_usb "Unexpected unused echo id" errors** in dmesg → reload module:
+   `sudo rmmod gs_usb && sudo modprobe gs_usb`
+7. **can1 missing after reboot** → either replug the adapter (udev rule brings
+   it up) or run: `sudo ip link set can1 up type can bitrate 1000000`
+8. **`read_state()` tau field is amps (Iq), not N·m.** Multiply by motor Kt
+   to get torque if needed.
 
 ## docs/notes maintenance rule (CubeMars)
-`docs/notes/cubemars_notes.tex` exists and is the authoritative
-reference. Update + recompile (twice) after any change to
-`src/cubemars_bus.py`, `src/ak_v3_can.py`, the `motor_config.py`
-CubeMars sections, or `tests/cubemars/`:
+`docs/notes/cubemars_notes.tex` is the authoritative reference. Update +
+recompile (twice) after any change to `src/ak_v3_can.py`, `src/ak_v3_common.py`,
+the `motor_config.py` CubeMars sections, or `tests/cubemars/`:
 ```bash
 cd docs/notes
 pdflatex -interaction=nonstopmode cubemars_notes.tex
 pdflatex -interaction=nonstopmode cubemars_notes.tex
 ```
-
----
-
-# CubeMars AK-series V3.0 firmware protocol (NEW — see `ak_v3_can.py`)
-
-The **V3.0 driver-board firmware** (manual `AK Series V3.0.1`) uses a
-different protocol than the classic Damiao-style MIT used by the older
-`cubemars_bus.py`. New code targeting a freshly-flashed V3.0 board
-should use `src/ak_v3_can.py` (python-can + SocketCAN).
-
-## V3.0 unified extended-ID scheme
-- All control modes use **CAN 2.0B extended frames** (29-bit ID).
-- `CAN_ID = (PACKET_TYPE << 8) | ESC_ID`
-- Packet types: `0=Duty, 1=Current, 2=Brake, 3=RPM, 4=Pos, 5=Origin,
-  6=PosVel, 8=MIT`.
-- Feedback ID: `(0x29 << 8) | ESC_ID` (e.g. `0x2968` for ESC=0x68).
-
-## V3.0 MIT byte order (DIFFERENT from classic MIT)
-**Kp first**, not position first:
-```
-byte0 = Kp[11:4]
-byte1 = Kp[3:0]|Kd[11:8]
-byte2 = Kd[7:0]
-byte3 = pos[15:8]
-byte4 = pos[7:0]
-byte5 = vel[11:4]
-byte6 = vel[3:0]|tau[11:8]
-byte7 = tau[7:0]
-```
-
-## Feedback frame (8 bytes, plain int16 + temp + error)
-- bytes 0–1: int16 position × 0.1 → degrees
-- bytes 2–3: int16 speed × 10 → ERPM
-- bytes 4–5: int16 current × 0.01 → amps
-- byte 6: int8 MOS temperature (°C)
-- byte 7: uint8 error code (0 = no fault)
-
-## R-Link "CAN Mode" setting (clarification, verified V3.0.1 §3.1.1.1)
-`Periodic Feedback` vs `Query-Reply` (R-Link UI calls the latter
-"Inquiry Feedback") selects feedback **delivery** only. Periodic =
-auto-broadcast at CAN Fdb Rate; Query-Reply = only after a command.
-It does **NOT** select MIT vs Servo. Servo packet types (0–7) and MIT
-(packet type 8) are available **simultaneously** on the bus — no
-mode-switch exists.
-
-## AK60-6 V3.0 KV80 parameter ranges (manual §4.2)
-`P_MAX=12.56 rad, V_MAX=60 rad/s, T_MAX=12 N·m, Kp 0–500, Kd 0–5`.
-These differ from TMotorCANControl (V=50, T=15) and from the
-`CUBEMARS_LIMITS` table in `motor_config.py` (V=45, T=15).
-
-## Hardware: USB-to-CAN adapter for V3.0 driver
-- Waveshare USB-CAN-A or DSD TECH Canable; Linux `gs_usb` driver.
-- Bring up: `sudo ip link set can0 up type can bitrate 1000000`.
-- Use `python-can` SocketCAN backend.
-
-## Compatibility note
-- `src/cubemars_bus.py` uses **classic** MIT (position-first, standard
-  11-bit ID, HDSC serial transport). **V3.0 firmware ignores standard
-  11-bit frames entirely** — it only listens on extended 29-bit IDs.
-  So `cubemars_bus.py` will NOT work with V3.0 motors regardless of
-  R-Link settings. Use `ak_v3_can.py` (SocketCAN) or `ak_v3_serial.py`
-  (experimental HDSC ext-frame) for V3.0.
-- Therefore `tests/cubemars/00_sanity_check_legacy.py` getting 0
-  responses from a V3.0 motor is EXPECTED and tells us nothing about
-  hardware health. Use R-Link UART (CubeMarsTool) to verify the motor
-  is alive — it bypasses CAN entirely.
-- Never delete `cubemars_bus.py` without verifying which firmware
-  revision the bench motor is running (V2.x classic firmware still
-  supports it).
 
 ---
 

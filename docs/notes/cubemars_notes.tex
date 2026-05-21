@@ -770,7 +770,12 @@ with open_cubemars_bus(set_zero=True) as bus:
 \toprule
 Script & Purpose \\
 \midrule
-\texttt{00\_scan\_can\_id.py}          & Sweep IDs 0x01--0x7F, identify motor; also detects Servo Mode\\
+\texttt{00\_loopback\_dsd\_tech.py}    & DSDTech USB adapter loopback (SW + physical) \\
+\texttt{00\_loopback\_socketcan.py}    & Jetson built-in CAN0 loopback (SW + physical) \\
+\texttt{00\_scan\_bitrate.py}          & Passive bitrate scan (find motor's actual rate) \\
+\texttt{00\_probe\_motor.py}           & Safe zero-torque CAN ping; confirms motor alive \\
+\texttt{00\_sniff\_motor.py}           & Passive V3.0 feedback sniffer; no TX (safest) \\
+\texttt{00\_read\_params.py}           & Read all motor parameters via UART serial (\texttt{COMM\_GET\_VALUES}) \\
 \texttt{01\_check\_connection.py}      & Poll 5 feedback frames, confirm non-zero \\
 \texttt{02\_mit\_position.py}          & MIT position hold, step through angles \\
 \texttt{03\_mit\_velocity.py}          & MIT velocity tracking \\
@@ -781,6 +786,16 @@ Script & Purpose \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\paragraph{Serial parameter read (\texttt{00\_read\_params.py}).}
+Uses the motor's 3-pin UART port (not CAN) at 921\,600\,baud.
+Requires a USB-to-UART adapter (FTDI/CH340 etc.) wired:
+GND\,$\leftrightarrow$\,GND, adapter\,TX\,$\to$\,motor\,RX,
+adapter\,RX\,$\to$\,motor\,TX.
+Sends \texttt{COMM\_GET\_VALUES} (0x45) and displays a table of all 17
+operating parameters; also demonstrates the selective
+\texttt{COMM\_GET\_VALUES\_SETUP} (0x10) bitmask query.
+Run as: \texttt{sudo python3 00\_read\_params.py [--port /dev/ttyUSB0]}.
 
 % =========================================================================
 \section{Known issues and gotchas}

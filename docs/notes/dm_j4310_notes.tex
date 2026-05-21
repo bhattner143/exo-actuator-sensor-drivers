@@ -113,12 +113,12 @@ Parameter & Required value & Effect if wrong & How to fix\\
 
 \noindent Dump all current firmware values:
 \begin{lstlisting}
-python tests/01_read_params.py
+python tests/damiao/01_read_params.py
 \end{lstlisting}
 
 \noindent Fix \texttt{MST\_ID} via Python if the debug tool is unavailable:
 \begin{lstlisting}
-# tests/02_write_params.py -- set at top, run once
+# tests/damiao/02_write_params.py -- set at top, run once
 PARAM   = DM_variable.MST_ID
 VALUE   = 0x11
 PERSIST = True   # calls save_motor_param() to survive power cycle
@@ -303,9 +303,9 @@ mc.controlMIT(motor, 30.0, 1.0, math.pi/2, 0.0, 0.0)  # +90 deg
         \emph{Write Param}.}
   \item Confirm \texttt{PMAX = 12.5}, \texttt{VMAX = 30},
         \texttt{TMAX = 10}.  Adjust if different.
-  \item Run \texttt{python tests/01\_read\_params.py} -- should print all
+  \item Run \texttt{python tests/damiao/01\_read\_params.py} -- should print all
         firmware registers without timeout warnings.
-  \item Run \texttt{python tests/03\_pos\_vel\_control.py} -- motor should
+  \item Run \texttt{python tests/damiao/03\_pos\_vel\_control.py} -- motor should
         move to $+90^{\circ}$, hold 4\,s, return to $0^{\circ}$.
         Any other angle indicates a PMAX mismatch (Layer~2) or an
         incorrect gear-ratio factor.
@@ -342,19 +342,19 @@ wiring from control logic -- following the same contract as
   \node[cfg] (cc) at (-5.5,-2.0)
     {\textbf{CubeMarsMotorConfig}\\ \footnotesize can\_id, model string};
   \node[cfg] (bcc) at (-5.5,-3.8)
-    {\textbf{CubeMarsBusConfig}\\ \footnotesize port, baudrate\\ motors: dict[name $\to$ cfg]};
+    {\textbf{CubeMarsAkV3BusConfig}\\ \footnotesize channel (SocketCAN)\\ motors: dict[name $\to$ cfg]};
 
   % Bus column
   \node[bus] (db) at (0.5, 0.0)
     {\textbf{DamiaoBus}\\ \footnotesize connect() / disconnect()\\ read(data\_name, names)\\ write(data\_name, values)};
   \node[bus] (cb) at (0.5,-3.8)
-    {\textbf{CubemarsMotorsBus}\\ \footnotesize connect() / disconnect()\\ read(data\_name, names)\\ write(data\_name, values)};
+    {\textbf{CubeMarsAkV3Bench}\\ \footnotesize connect() / disconnect()\\ read\_state() / write()\\ (AK80-8 V1.x: CubeMarsAkV1Bench)};
 
   % Driver / vendor layer
   \node[drv] (dm) at (6.0, 0.0)
-    {\textbf{DM\_CAN.py}\\ \footnotesize Motor, MotorControl\\ (vendor driver -- unchanged)};
+    {\textbf{damiao/DM\_CAN.py}\\ \footnotesize Motor, MotorControl\\ (vendor driver -- unchanged)};
   \node[drv] (cu) at (6.0,-3.8)
-    {\textbf{cubemars\_bus.py}\\ \footnotesize self-contained serial\\ + MIT codec};
+    {\textbf{cubemars/ak\_v3/AK\_V3\_CAN.py}\\ \footnotesize CubeMarsAkV3Motor\\ SocketCAN extended frames};
 
   % Arrows: config -> bus
   \draw[->, black!40, thick] (mc.east) -- ([yshift= 6pt]db.west);
@@ -409,65 +409,33 @@ HDSC serial envelope & 30-byte tx, 16-byte rx & same\\
 \end{tabular}
 \end{center}
 
-% ---- Complete 4-motor example -------------------------------------------
-\subsection{Complete 4-motor example (2 Damiao + 2 CubeMars)}
+% ---- Complete 2-bus example -------------------------------------------
+\subsection{Two-bus example: Damiao joint + CubeMars AK60-6 joint}
 
 \begin{lstlisting}
-# robot_arm.py -- 4-DOF arm: shoulder+elbow (Damiao), wrist+gripper (CubeMars)
+# robot_arm.py -- Damiao DM-J4310-2EC on UART + AK60-6 V3.0 on CAN
 import time, math
-from motor_config import (
-    DamiaoBusConfig, DamiaoMotorConfig,
-    CubeMarsBusConfig, CubeMarsMotorConfig,
-)
-from damiao_bus    import DamiaoBus
-from cubemars_bus  import CubemarsMotorsBus
+from _common import open_bus, open_cubemars_ak_v3_bench, Control_Type
 
-# --- Declare hardware wiring (edit to match your setup) ------------------
-arm_cfg = DamiaoBusConfig(
-    port="/dev/ttyACM0",
-    motors={
-        "shoulder": DamiaoMotorConfig(can_id=0x01, master_id=0x11),
-        "elbow":    DamiaoMotorConfig(can_id=0x02, master_id=0x11),
-    },
-)
-wrist_cfg = CubeMarsBusConfig(
-    port="/dev/ttyACM1",
-    motors={
-        "wrist":   CubeMarsMotorConfig(can_id=0x01, model="AK80-9"),
-        "gripper": CubeMarsMotorConfig(can_id=0x02, model="AK60-6"),
-    },
-)
+# Damiao joint in MIT position mode; AK60-6 V3.0 joint
+with open_bus(mode=Control_Type.MIT, set_zero=True) as dm_bus, \
+     open_cubemars_ak_v3_bench(set_zero=True) as ak_bus:
 
-arm   = DamiaoBus(arm_cfg)
-wrist = CubemarsMotorsBus(wrist_cfg)
-
-arm.connect(sync_limits=True, enable=True, set_zero=True)
-wrist.connect(enable=True, set_zero=True)
-
-try:
     t0 = time.time()
     while time.time() - t0 < 10.0:          # run for 10 s
-        # --- read all joints -------------------------------------------
-        q_arm   = arm.read("position")      # {"shoulder": rad, "elbow": rad}
-        q_wrist = wrist.read("position")    # {"wrist": rad, "gripper": rad}
-
-        # --- sinusoidal demo trajectory --------------------------------
         t = time.time() - t0
-        arm.write("goal_position", {
-            "shoulder": 0.5 * math.sin(t),
-            "elbow":    0.3 * math.sin(2 * t),
-        }, kp=30.0, kd=1.0)
 
-        wrist.write("goal_position", {
-            "wrist":   0.2 * math.sin(t + 1.0),
-            "gripper": 0.1 * math.sin(t),
-        }, kp=20.0, kd=0.8)
+        # --- Damiao: sinusoidal sweep ----------------------------------
+        dm_bus.write("goal_position", {"j1": 0.5 * math.sin(t)},
+                     kp=30.0, kd=1.0)
+        q_dm, dq_dm, tau_dm = dm_bus.read_state()["j1"]
+
+        # --- AK60-6: mirrored motion at lower stiffness ---------------
+        ak_bus.write("goal_position", {"j1": -0.3 * math.sin(t)},
+                     kp=60.0, kd=1.5)
+        q_ak, dq_ak, ia_ak = ak_bus.read_state()["j1"]
 
         time.sleep(0.01)      # 100 Hz control loop
-
-finally:
-    arm.disconnect()
-    wrist.disconnect()
 \end{lstlisting}
 
 % ---- File layout ---------------------------------------------------------
@@ -478,11 +446,14 @@ finally:
 \toprule
 File & Purpose\\
 \midrule
-\texttt{src/motor\_config.py}  & Dataclasses: MotorConfig, BusConfig for both vendors\\
-\texttt{src/damiao\_bus.py}    & DamiaoBus (wraps DM\_CAN.py)\\
-\texttt{src/cubemars\_bus.py}  & CubemarsMotorsBus (self-contained)\\
-\texttt{src/DM\_CAN.py}        & Vendor driver -- unchanged\\
-\texttt{src/\_common.py}       & Single-motor test helper -- unchanged\\
+\texttt{src/motor\_config.py}               & Single source of truth: all hardware configs\\
+\texttt{src/\_common.py}                    & Test helpers: \texttt{open\_bus()}, \texttt{open\_cubemars\_ak\_v3\_bench()}, \texttt{open\_cubemars\_ak\_v1\_bench()}\\
+\texttt{src/damiao/DM\_CAN.py}              & Vendor driver -- unchanged\\
+\texttt{src/damiao/damiao\_bus.py}          & DamiaoBus (wraps DM\_CAN.py)\\
+\texttt{src/cubemars/ak\_v3/AK\_V3\_CAN.py} & CubeMars AK60-6 V3.0 CAN driver (\texttt{CubeMarsAkV3Motor})\\
+\texttt{src/cubemars/ak\_v3/ak\_v3\_bus.py} & \texttt{CubeMarsAkV3Bench} context manager\\
+\texttt{src/cubemars/ak\_v1/AK\_V1\_CAN.py} & CubeMars AK80-8 V1.x CAN driver (\texttt{CubeMarsAkV1Motor})\\
+\texttt{src/cubemars/ak\_v1/ak\_v1\_bus.py} & \texttt{CubeMarsAkV1Bench} context manager\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -882,9 +853,9 @@ print("Saved demo_trajectory.csv")
 \end{lstlisting}
 
 \noindent This script is provided in the repo as
-\texttt{tests/08\_kinesthetic\_record.py}.
+\texttt{tests/damiao/08\_kinesthetic\_record.py}.
 
-\subsection{Spring-return to origin (\texttt{tests/10\_impedance\_spring\_return.py})}
+\subsection{Spring-return to origin (\texttt{tests/damiao/10\_impedance\_spring\_return.py})}
 A companion script that uses MIT position mode with moderate stiffness to pull
 the joint back to zero after a demonstration:
 \begin{lstlisting}
@@ -954,15 +925,19 @@ Replay / execution                  & 30--80 & 1--2  & Balance accuracy vs compl
 % =========================================================================
 \begin{itemize}
   \item \texttt{docs/DM-J4310-en.pdf} -- the manual that this note summarises.
-  \item \texttt{src/DM\_CAN.py} -- vendor driver (unchanged). Mirror at
-        \texttt{motor-control-routine/Python例程/u2can/DM\_CAN.py}.
+  \item \texttt{src/damiao/DM\_CAN.py} -- vendor driver (unchanged). Mirror at
+        \texttt{old/motor-control-routine/Python例程/u2can/DM\_CAN.py}.
   \item \texttt{src/motor\_config.py} -- single source of truth for hardware
         wiring (\texttt{DamiaoMotorConfig}, \texttt{DamiaoBusConfig},
-        \texttt{CubeMarsMotorConfig}, \texttt{CubeMarsBusConfig},
-        \texttt{DEFAULT\_BENCH\_CONFIG}).
-  \item \texttt{src/damiao\_bus.py} -- LeRobot-style \texttt{DamiaoBus} wrapper.
-  \item \texttt{src/cubemars\_bus.py} -- \texttt{CubemarsMotorsBus} for CubeMars
-        AK-series (same bus contract as \texttt{DamiaoBus}).
+        \texttt{CubeMarsMotorConfig}, \texttt{CubeMarsAkV3BusConfig},
+        \texttt{CubeMarsAkV1BusConfig},
+        \texttt{DEFAULT\_BENCH\_CONFIG}, \texttt{DEFAULT\_AK60\_6\_BENCH\_CONFIG},
+        \texttt{DEFAULT\_AK80\_8\_BENCH\_CONFIG}).
+  \item \texttt{src/damiao/damiao\_bus.py} -- LeRobot-style \texttt{DamiaoBus} wrapper.
+  \item \texttt{src/cubemars/ak\_v3/ak\_v3\_bus.py} -- \texttt{CubeMarsAkV3Bench}
+        for CubeMars AK60-6 V3.0 (same bus contract as \texttt{DamiaoBus}).
+  \item \texttt{src/cubemars/ak\_v1/ak\_v1\_bus.py} -- \texttt{CubeMarsAkV1Bench}
+        for CubeMars AK80-8 V1.x.
   \item \texttt{src/\_common.py} -- test helpers: \texttt{open\_bus()} context
         manager (tests 03--10), \texttt{open\_motor()} + \texttt{safe\_disable\_close()}
         (legacy tests 01--02 only).

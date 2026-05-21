@@ -221,7 +221,7 @@ Feed-forward  & $\tau_{ff}$ & 12 & $-12$\,N$\cdot$m & $+12$\,N$\cdot$m \\
 \end{center}
 
 \begin{lstlisting}
-# src/ak_v3_common.py
+# src/cubemars/ak_v3/ak_v3_common.py
 def float_to_uint(x, x_min, x_max, bits):
     span = x_max - x_min
     x = max(x_min, min(x_max, x))
@@ -254,7 +254,7 @@ Byte & Content \\
 \end{center}
 
 Sent at extended CAN ID $(8 \ll 8) | \texttt{0x02} = \texttt{0x0802}$.
-Implemented in \texttt{AkV3Motor.set\_mit()}:
+Implemented in \texttt{CubeMarsAkV3Motor.set\_mit()}:
 
 \begin{lstlisting}
 def set_mit(self, p_des, v_des, kp, kd, t_ff):
@@ -293,7 +293,7 @@ Bytes & Encoding & Meaning \\
 \end{tabular}
 \end{center}
 
-Decoded in \texttt{AkV3Motor.parse\_feedback()}:
+Decoded in \texttt{CubeMarsAkV3Motor.parse\_feedback()}:
 
 \begin{lstlisting}
 def parse_feedback(self, msg):
@@ -308,7 +308,7 @@ def parse_feedback(self, msg):
     return True
 \end{lstlisting}
 
-\texttt{AkV3Bench.read\_state()} converts to SI units:
+\texttt{CubeMarsAkV3Bench.read\_state()} converts to SI units:
 \begin{align}
   q_{\text{rad}} &= q_{\deg} \cdot \tfrac{\pi}{180} \label{eq:deg2rad} \\
   \dot{q}_{\text{rad/s}} &= \frac{\text{ERPM}}{p_\text{pairs}} \cdot \frac{2\pi}{60}
@@ -326,7 +326,7 @@ Servo commands run the firmware's internal PID loops (no manual gain tuning).
 \begin{center}\small
 \begin{tabular}{lll}
 \toprule
-Method on \texttt{AkV3Motor} & \texttt{write()} data name & Notes \\
+Method on \texttt{CubeMarsAkV3Motor} & \texttt{write()} data name & Notes \\
 \midrule
 \texttt{set\_position\_deg(deg)} & \texttt{goal\_position\_deg}
   & Firmware position PID; deg in $[-36000, 36000]$ \\
@@ -348,7 +348,7 @@ Method on \texttt{AkV3Motor} & \texttt{write()} data name & Notes \\
 
 Trapezoidal move example:
 \begin{lstlisting}
-with open_ak_v3_bench() as bus:
+with open_cubemars_ak_v3_bench() as bus:
     # Move to 90 deg, cruise at 1000 ERPM, 30000 ERPM/s^2 accel:
     bus.write("goal_pos_spd", {"j1": 90.0},
               dq_des=1000, acc_erpm_s2=30_000)
@@ -432,34 +432,45 @@ sudo python3 tests/cubemars/00_read_params.py [--port /dev/ttyUSB0]
 \toprule
 File & Role \\
 \midrule
-\texttt{src/ak\_v3\_common.py}
-  & Constants: \texttt{AK\_V3\_LIMITS}, packet-type IDs,
+\texttt{src/cubemars/ak\_v3/ak\_v3\_common.py}
+  & Constants: \texttt{CUBEMARS\_AK\_V3\_LIMITS}, packet-type IDs,
     \texttt{float\_to\_uint}, \texttt{uint\_to\_float} \\
-\texttt{src/ak\_v3\_can.py}
-  & \texttt{AkV3Motor} -- low-level single-motor CAN driver \\
+\texttt{src/cubemars/ak\_v3/AK\_V3\_CAN.py}
+  & \texttt{CubeMarsAkV3Motor} -- low-level single-motor CAN driver \\
+\texttt{src/cubemars/ak\_v3/ak\_v3\_bus.py}
+  & \texttt{CubeMarsAkV3Bench} + \texttt{open\_cubemars\_ak\_v3\_bench()} --
+    high-level context-manager API used by all AK60-6 test scripts \\
+\texttt{src/cubemars/ak\_v1/AK\_V1\_CAN.py}
+  & \texttt{CubeMarsAkV1Motor} -- low-level CAN driver for AK80-8 V1.x \\
+\texttt{src/cubemars/ak\_v1/ak\_v1\_bus.py}
+  & \texttt{CubeMarsAkV1Bench} + \texttt{open\_cubemars\_ak\_v1\_bench()} --
+    context manager for AK80-8 V1.x \\
 \texttt{src/\_common.py}
-  & \texttt{AkV3Bench} + \texttt{open\_ak\_v3\_bench()} --
-    high-level context-manager API used by all test scripts \\
+  & Shared entry point for all test scripts \\
 \texttt{src/motor\_config.py}
-  & \texttt{CubeMarsMotorConfig}, \texttt{CubeMarsBusConfig},
-    \texttt{DEFAULT\_CUBEMARS\_BENCH\_CONFIG} \\
+  & \texttt{CubeMarsMotorConfig}, \texttt{CubeMarsAkV3BusConfig},
+    \texttt{CubeMarsAkV1BusConfig},
+    \texttt{DEFAULT\_AK60\_6\_BENCH\_CONFIG},
+    \texttt{DEFAULT\_AK80\_8\_BENCH\_CONFIG} \\
 \texttt{tests/cubemars/}
-  & Probe/diagnostic scripts (\texttt{00\_*}) and control scripts (01--07) \\
+  & Probe/diagnostic scripts (\texttt{00\_*}) and AK60-6 control scripts (01--07) \\
+\texttt{tests/cubemars-ak80-8-kv60/}
+  & Probe and control scripts for AK80-8 KV60 V1.x \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\subsection{\texttt{AkV3Motor} -- low-level}
+\subsection{\texttt{CubeMarsAkV3Motor} -- low-level}
 
 Wraps a \texttt{can.BusABC} (SocketCAN) and exposes one method per packet
 type, plus \texttt{parse\_feedback()} / \texttt{poll\_feedback()}.
 
 \begin{lstlisting}
 import can
-from ak_v3_can import AkV3Motor
+from cubemars.ak_v3.AK_V3_CAN import CubeMarsAkV3Motor
 
 bus   = can.Bus(channel="can1", interface="socketcan")
-motor = AkV3Motor(bus, can_id=0x02, model="AK60-6")
+motor = CubeMarsAkV3Motor(bus, can_id=0x02, model="AK60-6")
 
 motor.set_mit(p_des=0.0, v_des=0.0, kp=0.0, kd=0.0, t_ff=0.0)
 if motor.poll_feedback(timeout=0.1):
@@ -468,7 +479,7 @@ if motor.poll_feedback(timeout=0.1):
 bus.shutdown()
 \end{lstlisting}
 
-\subsection{\texttt{AkV3Bench} -- high-level context manager}
+\subsection{\texttt{CubeMarsAkV3Bench} -- high-level context manager}
 
 Adds lifecycle management (\texttt{connect}/\texttt{disconnect}/context
 manager), drain/flush, and a unified \texttt{write()} / \texttt{read\_state()}
@@ -477,9 +488,9 @@ API that mirrors \texttt{DamiaoBus}.
 \paragraph{Context-manager idiom (used by every test script):}
 
 \begin{lstlisting}
-from _common import open_ak_v3_bench
+from _common import open_cubemars_ak_v3_bench
 
-with open_ak_v3_bench(set_zero=True) as bus:
+with open_cubemars_ak_v3_bench(set_zero=True) as bus:
     bus.write("goal_position", {"j1": 1.57}, kp=60, kd=1.5)
     q, dq, ia = bus.read_state()["j1"]
     # q  : output-shaft position (rad)
@@ -592,7 +603,7 @@ Lower $K_d$ = softer feel; too low causes jitter from encoder noise.
 
 \begin{lstlisting}
 KP, KD = 5.0, 0.4   # soft: compliant but not jittery
-with open_ak_v3_bench(set_zero=True) as bus:
+with open_cubemars_ak_v3_bench(set_zero=True) as bus:
     while True:
         q, dq, ia = bus.read_state(timeout=0.02)["j1"]
         bus.write("goal_position", {"j1": q}, kp=KP, kd=KD)
@@ -646,7 +657,7 @@ Script & Purpose \\
 \end{tabular}
 \end{center}
 
-All scripts use \texttt{with open\_ak\_v3\_bench(...) as bus:} and
+All scripts use \texttt{with open\_cubemars\_ak\_v3\_bench(...) as bus:} and
 run as \texttt{sudo python3}.
 
 \subsection{Probe and diagnostic scripts (\texttt{00\_*})}
@@ -679,7 +690,7 @@ demonstrates \texttt{COMM\_GET\_VALUES\_SETUP} bitmask query.
 Polls five feedback frames and prints native units:
 
 \begin{lstlisting}
-with open_ak_v3_bench() as bus:
+with open_cubemars_ak_v3_bench() as bus:
     for i in range(5):
         pos, erpm, ia, tc, err = bus.read_raw(timeout=0.2)["j1"]
         print(f"pos={pos:+8.2f} deg  spd={erpm:+8.1f} ERPM  "
@@ -693,7 +704,7 @@ Steps through \texttt{TARGETS\_DEG = [0.0, 15.0, -15.0, 30.0, 0.0]},
 holding each for 1.5\,s at Kp=60, Kd=1.5:
 
 \begin{lstlisting}
-with open_ak_v3_bench(set_zero=True) as bus:
+with open_cubemars_ak_v3_bench(set_zero=True) as bus:
     for tgt_deg in TARGETS_DEG:
         tgt_rad = math.radians(tgt_deg)
         t0 = time.monotonic()
@@ -742,7 +753,7 @@ flashing new firmware.
 
 \paragraph{Software zero (volatile):}
 \begin{lstlisting}
-with open_ak_v3_bench(set_zero=True) as bus: ...
+with open_cubemars_ak_v3_bench(set_zero=True) as bus: ...
 # or explicitly after connect:
 bus.set_zero()   # permanent=False by default (RAM only, resets on power)
 \end{lstlisting}
@@ -778,8 +789,9 @@ sudo rmmod gs_usb && sudo modprobe gs_usb
   Multiply by $K_t \approx 0.12$\,N$\cdot$m/A for torque.
 
 \item \textbf{V3.0 ignores 11-bit standard CAN frames.}
-  The legacy \texttt{cubemars\_bus.py} silently fails on V3.0 firmware.
-  Use \texttt{ak\_v3\_can.py} / \texttt{AkV3Bench} exclusively.
+  The legacy \texttt{cubemars\_bus.py} (HDSC serial transport) has been
+  removed from the repo -- it silently failed on V3.0 firmware.
+  Use \texttt{cubemars/ak\_v3/AK\_V3\_CAN.py} / \texttt{CubeMarsAkV3Bench} exclusively.
 
 \item \textbf{Calibration required before first use.}
   An uncalibrated motor may spin erratically.  Run R-Link Motor ID +

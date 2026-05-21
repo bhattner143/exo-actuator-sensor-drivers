@@ -1,7 +1,7 @@
 """02 - MIT position hold for AK60-6 V3.0 KV80.
 
 Steps through several target angles using MIT mode (Kp/Kd position).
-V3.0 firmware MIT byte order is Kp-first (handled by AkV3Motor.set_mit).
+V3.0 firmware MIT byte order is Kp-first (handled by CubeMarsAkV3Motor.set_mit).
 
 SAFETY:
   - Motor must be free to rotate (unloaded), or holding only its own arm.
@@ -18,7 +18,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
-from _common import open_ak_v3_bench
+from _common import open_cubemars_ak_v3_bench
 
 KP = 60.0        # stiffness  (0..500) -- AK60-6 V3.0 tracks slowly below ~40
 KD = 1.5         # damping    (0..5)  -- NEVER set to 0 here
@@ -28,7 +28,7 @@ CONTROL_HZ = 100
 # Modest sweep around the current resting position; do not chase ±2pi at once.
 TARGETS_DEG = [0.0, 15.0, -15.0, 30.0, 0.0]
 
-with open_ak_v3_bench(set_zero=True) as bus:
+with open_cubemars_ak_v3_bench(set_zero=True) as bus:
     print(f"AK60-6 MIT position hold  Kp={KP} Kd={KD}")
     print(f"Targets (deg): {TARGETS_DEG}\n")
 

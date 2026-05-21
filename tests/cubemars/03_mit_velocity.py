@@ -13,7 +13,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
-from _common import open_ak_v3_bench
+from _common import open_cubemars_ak_v3_bench
 
 KD = 1.0          # damping  (0..5) -- acts as the velocity-loop gain in MIT
 RUN_S = 2.0       # seconds per setpoint
@@ -21,7 +21,7 @@ RUN_S = 2.0       # seconds per setpoint
 # Modest, alternating direction.  AK60-6 V3.0 V_MAX = ±60 rad/s.
 TARGETS = [+3.0, -3.0, +1.5, 0.0]
 
-with open_ak_v3_bench() as bus:
+with open_cubemars_ak_v3_bench() as bus:
     print(f"AK60-6 MIT velocity tracking  Kp=0 Kd={KD}")
     print(f"Targets (rad/s): {TARGETS}\n")
 

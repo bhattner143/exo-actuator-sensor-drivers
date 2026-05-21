@@ -15,11 +15,12 @@ CubeMars AK series (AK10-9, AK60-6, AK70-10, AK80-6, AK80-9, AK80-64, ...)
     Protocol: identical MIT bit-packed CAN frame over HDSC USB-to-CAN.
     Feedback differs: CAN ID of feedback frame = motor's own ESC_ID (not MST_ID).
 
-Quick-start example (2 Damiao + 2 CubeMars)
---------------------------------------------
+Quick-start example (Damiao + CubeMars V3.0 + CubeMars V1.x)
+-------------------------------------------------------------
     from motor_config import (
         DamiaoBusConfig, DamiaoMotorConfig,
-        CubeMarsBusConfig, CubeMarsMotorConfig,
+        CubeMarsAkV3BusConfig, CubeMarsMotorConfig,
+        CubeMarsAkV1BusConfig, CubeMarsAkV1MotorConfig,
     )
 
     damiao_cfg = DamiaoBusConfig(
@@ -29,12 +30,13 @@ Quick-start example (2 Damiao + 2 CubeMars)
             "elbow":    DamiaoMotorConfig(can_id=0x02),
         },
     )
-    cubemars_cfg = CubeMarsBusConfig(
-        port="/dev/ttyACM1",
-        motors={
-            "wrist":   CubeMarsMotorConfig(can_id=0x01, model="AK80-9"),
-            "gripper": CubeMarsMotorConfig(can_id=0x02, model="AK60-6"),
-        },
+    ak60_cfg = CubeMarsAkV3BusConfig(
+        channel="can1",
+        motors={"wrist": CubeMarsMotorConfig(can_id=0x02, model="AK60-6")},
+    )
+    ak80_cfg = CubeMarsAkV1BusConfig(
+        channel="can1",
+        motors={"shoulder": CubeMarsAkV1MotorConfig(can_id=0x01, model="AK80-8")},
     )
 """
 from __future__ import annotations
@@ -43,9 +45,9 @@ import os
 import sys
 from dataclasses import dataclass, field
 
-# Ensure DM_CAN.py is importable from this same src/ directory
+# Ensure src/ is in sys.path for package imports (damiao.DM_CAN, etc.)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from DM_CAN import DM_Motor_Type
+from damiao.DM_CAN import DM_Motor_Type
 
 # ---------------------------------------------------------------------------
 # CubeMars AK-series MIT limits  [PMAX (rad), VMAX (rad/s), TMAX (N·m)]
@@ -55,9 +57,10 @@ from DM_CAN import DM_Motor_Type
 # full-scale range of the 16/12-bit position/velocity/torque fields.
 CUBEMARS_LIMITS: dict[str, list[float]] = {
     "AK10-9":  [12.5,  50.0,  65.0],   # high-torque, low-speed planetary
-    "AK60-6":  [12.5,  45.0,  15.0],   # medium-duty
+    "AK60-6":  [12.5,  45.0,  15.0],   # medium-duty (V3.0: P=±12.56, V=±60, T=±12; bench uses firmware defaults)
     "AK70-10": [12.5,  50.0,  24.8],   # medium-duty, higher speed
     "AK80-6":  [12.5,  45.0,  15.0],   # same limits as AK60-6
+    "AK80-8":  [12.5,  37.5,  32.0],   # V1.x -- manual §5.3 table (shoulder motor on this bench)
     "AK80-9":  [12.5,  50.0,  18.0],   # popular for bipeds / arms
     "AK80-64": [12.5,   8.0, 144.0],   # very high torque (64:1 gearbox)
     "AK10-9V2":[12.5,  50.0,  65.0],   # V2 hardware, same limits
@@ -113,6 +116,34 @@ class CubeMarsMotorConfig:
 
 
 # ---------------------------------------------------------------------------
+# Per-motor configuration -- CubeMars AK-series V1.x (standard CAN frames)
+# ---------------------------------------------------------------------------
+@dataclass
+class CubeMarsAkV1MotorConfig:
+    """Configuration for one CubeMars AK-series V1.x motor on SocketCAN.
+
+    V1.x firmware uses standard 11-bit CAN frames (CAN 2.0A) and a
+    position-first MIT byte layout.  Distinct from V3.0 which uses 29-bit
+    extended frames.
+
+    Attributes
+    ----------
+    can_id : ESC_ID programmed on the motor (DIP switches / R-Link).
+    model  : String key into CUBEMARS_LIMITS, e.g. "AK80-8".
+             Determines the PMAX/VMAX/TMAX scaling for the MIT frame.
+    """
+    can_id: int = 0x01
+    model:  str = "AK80-8"
+
+    def __post_init__(self):
+        if self.model not in CUBEMARS_LIMITS:
+            raise ValueError(
+                f"Unknown AK V1.x model '{self.model}'. "
+                f"Known models: {list(CUBEMARS_LIMITS)}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Bus-level configuration -- Damiao
 # ---------------------------------------------------------------------------
 @dataclass
@@ -132,21 +163,46 @@ class DamiaoBusConfig:
 
 
 # ---------------------------------------------------------------------------
-# Bus-level configuration -- CubeMars
+# Bus-level configuration -- CubeMars AK-series V3.0 (SocketCAN)
 # ---------------------------------------------------------------------------
 @dataclass
-class CubeMarsBusConfig:
-    """Configuration for the CubemarsMotorsBus (one HDSC USB-to-CAN serial port).
+class CubeMarsAkV3BusConfig:
+    """Configuration for CubeMarsAkV3Bench (CubeMars V3.0 firmware over SocketCAN).
+
+    V3.0 uses CAN 2.0B extended frames (29-bit arbitration IDs) over a
+    SocketCAN interface (e.g. can1 via DSDTech SH-C30A + gs_usb module).
 
     Attributes
     ----------
-    port     : Serial device path, e.g. "/dev/ttyACM1".
-    motors   : Mapping of human-readable name -> CubeMarsMotorConfig.
-    baudrate : Serial baud rate.  921600 for HDSC adapter.
+    channel : SocketCAN interface name, e.g. "can1".
+    motors  : Mapping of human-readable name -> CubeMarsMotorConfig.
+    bitrate : CAN bitrate in bps (default 1 Mbps; do not change).
     """
-    port:     str
-    motors:   dict[str, CubeMarsMotorConfig] = field(default_factory=dict)
-    baudrate: int = 921600
+    channel: str
+    motors:  dict[str, CubeMarsMotorConfig] = field(default_factory=dict)
+    bitrate: int = 1_000_000
+
+
+# ---------------------------------------------------------------------------
+# Bus-level configuration -- CubeMars AK-series V1.x (SocketCAN)
+# ---------------------------------------------------------------------------
+@dataclass
+class CubeMarsAkV1BusConfig:
+    """Configuration for CubeMarsAkV1Bench (CubeMars V1.x firmware over SocketCAN).
+
+    V1.x uses CAN 2.0A standard frames (11-bit arbitration IDs) over the
+    same SocketCAN interface as the V3.0 motor -- both can share can1
+    simultaneously because CAN hardware distinguishes frame types.
+
+    Attributes
+    ----------
+    channel : SocketCAN interface name, e.g. "can1".
+    motors  : Mapping of human-readable name -> CubeMarsAkV1MotorConfig.
+    bitrate : CAN bitrate in bps (default 1 Mbps; do not change).
+    """
+    channel: str
+    motors:  dict[str, CubeMarsAkV1MotorConfig] = field(default_factory=dict)
+    bitrate: int = 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -169,19 +225,27 @@ DEFAULT_BENCH_CONFIG = DamiaoBusConfig(
 
 
 # ---------------------------------------------------------------------------
-# Default bench-test config (single CubeMars AK60-6 V3.0 KV80)
+# Default bench-test config -- CubeMars AK60-6 V3.0 KV80 (elbow joint)
 # ---------------------------------------------------------------------------
-# Uses the DSDTech SH-C30A USB-to-CAN adapter (gs_usb / SocketCAN can1).
-#
-# CAN ID confirmed via active probe (00_probe_motor.py): 2 decimal (0x02).
-#   Previous entry (0x68) was the R-Link default; motor was re-configured.
-# CAN Mode: "Inquiry Feedback" (Query-Reply) -- motor replies on command only.
-# Model "AK60-6" limits (confirmed from R-Link: Hw=AK60_6V, Sw=AK60_6_SE_V3):
-#   P_MAX = 12.5 rad, V_MAX = 45 rad/s, T_MAX = 15 N.m
-DEFAULT_CUBEMARS_BENCH_CONFIG = CubeMarsBusConfig(
-    port="/dev/ttyACM0",
-    baudrate=921600,
-    motors={
-        "j1": CubeMarsMotorConfig(can_id=0x02, model="AK60-6"),
-    },
+# Adapter  : DSDTech SH-C30A (USB ID 1d50:606f, gs_usb module -> can1)
+# CAN ID   : 0x02 (confirmed; previous default 0x68 was R-Link factory value)
+# CAN Mode : Query-Reply (motor replies when commanded)
+# Firmware : AK60_6_SE_V3 (V3.0, extended 29-bit frames)
+# Limits   : P=±12.5 rad, V=±45 rad/s, T=±15 N·m  (CUBEMARS_LIMITS["AK60-6"])
+DEFAULT_AK60_6_BENCH_CONFIG = CubeMarsAkV3BusConfig(
+    channel="can1",
+    motors={"j1": CubeMarsMotorConfig(can_id=0x02, model="AK60-6")},
+)
+
+
+# ---------------------------------------------------------------------------
+# Default bench-test config -- CubeMars AK80-8 KV60 V1.x (shoulder joint)
+# ---------------------------------------------------------------------------
+# Adapter  : DSDTech SH-C30A (same USB adapter as AK60-6, shares can1)
+# CAN ID   : 0x01 (set via R-Link)
+# Firmware : V1.x (standard 11-bit frames, position-first MIT layout)
+# Limits   : P=±12.5 rad, V=±37.5 rad/s, T=±32 N·m  (CUBEMARS_LIMITS["AK80-8"])
+DEFAULT_AK80_8_BENCH_CONFIG = CubeMarsAkV1BusConfig(
+    channel="can1",
+    motors={"j1": CubeMarsAkV1MotorConfig(can_id=0x01, model="AK80-8")},
 )

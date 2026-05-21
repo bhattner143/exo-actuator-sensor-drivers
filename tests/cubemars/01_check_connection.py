@@ -22,9 +22,9 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
-from _common import open_ak_v3_bench
+from _common import open_cubemars_ak_v3_bench
 
-with open_ak_v3_bench() as bus:
+with open_cubemars_ak_v3_bench() as bus:
     print("Polling AK60-6 V3.0 for 5 feedback packets on can1...\n")
     got = 0
     for i in range(5):

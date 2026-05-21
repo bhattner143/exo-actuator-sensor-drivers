@@ -14,14 +14,14 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
-from _common import open_ak_v3_bench
+from _common import open_cubemars_ak_v3_bench
 
 KP = 10.0     # spring stiffness (0..500); raise for stiffer hold
 KD = 0.5      # damping          (0..5; never 0)
 DURATION_S = 30.0
 CONTROL_HZ = 100
 
-with open_ak_v3_bench(set_zero=True) as bus:
+with open_cubemars_ak_v3_bench(set_zero=True) as bus:
     print(f"Spring-return impedance: anchor=0 rad, Kp={KP}, Kd={KD}")
     print(f"Push the shaft -- it should return to zero.  Ctrl-C to stop.\n")
 

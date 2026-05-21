@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
-from _common import open_ak_v3_bench
+from _common import open_cubemars_ak_v3_bench
 
 KP = 30.0           # stiffer for replay (0..500)
 KD = 1.0            # damping            (0..5, never 0)
@@ -41,7 +41,7 @@ if not samples:
 print(f"Loaded {len(samples)} samples spanning {samples[-1][0]:.2f} s.")
 print(f"Replaying with Kp={KP} Kd={KD}.\n")
 
-with open_ak_v3_bench() as bus:
+with open_cubemars_ak_v3_bench() as bus:
     # Drive to the first sample slowly before starting playback
     t0_q, q0, _ = samples[0]
     print(f"Moving to start q={math.degrees(q0):+7.2f} deg ...")

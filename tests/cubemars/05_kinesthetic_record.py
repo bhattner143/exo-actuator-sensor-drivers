@@ -20,7 +20,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
-from _common import open_ak_v3_bench
+from _common import open_cubemars_ak_v3_bench
 
 KP = 5.0            # soft spring
 KD = 0.4            # mild damping  (NEVER 0)
@@ -28,7 +28,7 @@ CONTROL_HZ = 100
 CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         '..', '..', 'demo_trajectory_ak80.csv')
 
-with open_ak_v3_bench(set_zero=True) as bus:
+with open_cubemars_ak_v3_bench(set_zero=True) as bus:
     print(f"Recording at {CONTROL_HZ} Hz with Kp={KP} Kd={KD}.")
     print("Hand-guide the motor.  Press Ctrl-C to stop and save.\n")
     rows = []

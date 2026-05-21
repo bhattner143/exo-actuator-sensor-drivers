@@ -19,13 +19,13 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
-from _common import open_ak_v3_bench
+from _common import open_cubemars_ak_v3_bench
 
 PULSE_S    = 0.4
 COOL_S     = 0.6
 PULSES_NM  = [+0.3, -0.3, +0.5, 0.0]   # keep magnitudes small
 
-with open_ak_v3_bench() as bus:
+with open_cubemars_ak_v3_bench() as bus:
     print(f"AK60-6 MIT open-loop torque  Kp=0 Kd=0")
     print(f"Pulses (N.m): {PULSES_NM}\n")
 

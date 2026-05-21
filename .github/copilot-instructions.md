@@ -279,11 +279,11 @@ debugging without SI unit conversion.
 ## Test scripts (tests/cubemars/)
 | File | Purpose |
 |---|---|
-| 00_probe_motor.py         | Raw CAN probe; confirms ESC_ID + feedback decode |
-| 00_scan_can_id.py         | Sweep all ESC IDs; find the motor's ID |
-| 00_loopback_socketcan.py  | SocketCAN loopback self-test |
-| 00_sniff_motor.py         | Passive sniffer: print all extended frames |
-| 00_sanity_check_legacy.py | Legacy HDSC check (expected all-zeros on V3.0) |
+| 00_loopback_dsd_tech.py   | DSD TECH USB adapter loopback (software + physical) |
+| 00_loopback_socketcan.py  | Jetson built-in CAN0 loopback (software + physical) |
+| 00_scan_bitrate.py        | Passive bitrate scan (find motor's actual rate) |
+| 00_probe_motor.py         | Safe zero-torque ping; confirms motor is alive |
+| 00_sniff_motor.py         | Passive V3.0 feedback sniffer; no TX (safest first test) |
 | 01_check_connection.py    | Poll 5 feedback frames, confirm non-zero response |
 | 02_mit_position.py        | MIT position hold (Kp=60 Kd=1.5); sweep ±30° |
 | 03_mit_velocity.py        | MIT velocity tracking (Kd=1.0) |
@@ -305,7 +305,8 @@ All tests 01–07 use `with open_ak_v3_bench() as bus:` — never call
 ## Critical gotchas (CubeMars V3.0)
 1. **V3.0 firmware ignores standard 11-bit frames** entirely. The legacy
    `cubemars_bus.py` (HDSC serial transport) will NOT work. Use `ak_v3_can.py`.
-   `00_sanity_check_legacy.py` returning all-zeros is expected on V3.0 hardware.
+   Legacy test files (`00_sanity_check_legacy.py`, `00_scan_can_id.py`,
+   `00_probe_v3_serial.py`) have been removed from the repo.
 2. **Never Kd=0 in position mode.** Same rule as Damiao.
 3. **ESC_ID = 0x02** (not 0x68). Wrong ID → `read_state()` returns cached zeros
    silently. Verify with `00_scan_can_id.py` if unsure.

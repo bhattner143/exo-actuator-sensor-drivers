@@ -19,8 +19,8 @@
 }
 
 \title{\textbf{CubeMars AK60-6 V3.0 KV80}\\[2pt]
-       \large Internal notes -- MIT protocol, wiring, calibration,\\
-       servo-mode vs.\ MIT-mode, troubleshooting}
+       \large Internal notes -- V3.0 extended-frame CAN protocol,
+       driver architecture, test scripts}
 \author{Repo \texttt{exo-actuator-sensor-drivers}}
 \date{\today}
 
@@ -29,773 +29,723 @@
 \newpage
 
 % =========================================================================
-\section{What it is}
-\label{sec:intro}
+\section{Hardware overview}
+\label{sec:hw}
 % =========================================================================
-
-The \textbf{CubeMars AK80-9 KV60} is a brushless servo motor with an
-integrated planetary gearbox and dual magnetic encoders, designed for
-force-torque controlled robotic joints.  It uses the same
-\textbf{MIT mini-cheetah CAN protocol} (hereafter \emph{MIT mode}) that
-was published by the MIT Biomimetic Robotics Lab for their
-mini-cheetah actuators and subsequently adopted by many vendors
-(CubeMars, T-Motor, Damiao, and others).
 
 \begin{center}\small
 \begin{tabular}{ll}
 \toprule
 Property & Value \\
 \midrule
-Model              & AK60-6 V3.0 KV80 \\
-Voltage            & 18--52\,V (rated 48\,V) \\
-Rated current      & 10\,A \\
-Peak current       & 30\,A \\
-Gear ratio         & 6:1 planetary \\
-Output torque (cont.) & $\approx$5\,N$\cdot$m \\
-Output torque (peak)  & 15\,N$\cdot$m \\
-Output speed (no-load)& $\approx$45\,rad/s at 48\,V \\
-Position range     & $\pm 12.5$\,rad (firmware MIT limit, \texttt{PMAX}) \\
-Encoder            & dual 14-bit magnetic (rotor + output shaft) \\
-CAN bus            & 1\,Mbps standard or extended frame \\
-CAN mode (our driver) & \textbf{MIT mode only} (see Section~\ref{sec:modes}) \\
-CAN ID (bench)     & \textbf{0x68 = 104} (confirmed via scan 12~May~2026) \\
-R-Link MIT setting & \textbf{Inquiry Feedback} (not ``Periodic Feedback'') \\
-Configuration tool & R-Link (CubeMars Windows application) \\
+Model                   & AK60-6 V3.0 KV80 \\
+Voltage                 & 18--52\,V (rated 48\,V) \\
+Rated / peak current    & 10\,A / 30\,A \\
+Gear ratio              & 6:1 planetary \\
+Output torque (cont.)   & $\approx$5\,N$\cdot$m \\
+Output torque (peak)    & 12\,N$\cdot$m \\
+Output speed (no-load)  & $\approx$60\,rad/s at 48\,V \\
+MIT position range      & $\pm 12.56$\,rad (\texttt{P\_MAX}) \\
+Encoder                 & dual 14-bit magnetic (rotor + output shaft) \\
+Pole pairs              & 14 \\
+CAN bus                 & 1\,Mbps, \textbf{CAN 2.0B extended frames} (29-bit IDs) \\
+CAN adapter (bench)     & DSDTech SH-C30A (USB ID \texttt{1d50:606f}), \texttt{can1} \\
+ESC\_ID (bench)         & \textbf{0x02} (set via R-Link) \\
+Feedback CAN ID         & \texttt{(0x29 << 8) | 0x02 = 0x2902} \\
+UART serial port        & 3-pin terminal, 921600\,baud, 8N1 \\
+Configuration tool      & R-Link (CubeMars Windows application) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Bench wiring}
+
+\begin{center}
+\begin{tikzpicture}[every node/.style={font=\small},
+  box/.style={draw=black!50, rounded corners=4pt, inner sep=8pt,
+              text width=3.4cm, align=center, minimum height=1.2cm}]
+  \node[box, fill=blue!8]   (jt)  at (0,   0) {Jetson Orin Nano\\(Python)};
+  \node[box, fill=gray!12]  (adp) at (5.2, 0) {DSDTech SH-C30A\\{\footnotesize USB \texttt{1d50:606f}}\\{\footnotesize \texttt{can1}}};
+  \node[box, fill=orange!10](mot) at (10.4,0) {AK60-6 V3.0\\{\footnotesize ESC\_ID = 0x02}};
+  \draw[-Stealth, thick, blue!60]
+    (jt.east)  -- node[above, font=\footnotesize]{USB} (adp.west);
+  \draw[Stealth-Stealth, thick, orange!70!black]
+    (adp.east) -- node[above, font=\footnotesize, align=center]{CAN\,H / CAN\,L\\1\,Mbps} (mot.west);
+  \node[font=\scriptsize, text=gray!60] at (5.2, -1.2)
+    {$120\,\Omega$ termination at motor connector};
+\end{tikzpicture}
+\end{center}
+
+\begin{center}
+\begin{tikzpicture}[every node/.style={font=\small},
+  box/.style={draw=black!50, rounded corners=4pt, inner sep=8pt,
+              text width=3.4cm, align=center, minimum height=1.2cm}]
+  \node[box, fill=blue!8]  (ua)  at (0,   0) {USB-UART adapter\\{\footnotesize (FTDI/CH340)}\\{\footnotesize \texttt{/dev/ttyUSB0}}};
+  \node[box, fill=orange!10](mot) at (6.5, 0) {AK60-6 V3.0\\3-pin UART terminal\\{\footnotesize GND / RX / TX}};
+  \draw[Stealth-Stealth, thick, green!60!black]
+    (ua.east) -- node[above, font=\footnotesize, align=center]{921600 baud, 8N1} (mot.west);
+  \node[font=\scriptsize, text=gray!60] at (3.2, -1.1)
+    {adapter TX $\to$ motor RX \quad adapter RX $\to$ motor TX};
+\end{tikzpicture}
+\end{center}
+
+The CAN interface is used for all real-time control (MIT and servo modes).
+The UART serial interface is used only by \texttt{00\_read\_params.py} to
+read motor operating parameters via \texttt{COMM\_GET\_VALUES}.
+
+\subsection{Adapter setup (once per Jetson OS install)}
+
+\begin{lstlisting}[language=bash, numbers=none]
+# Build and install gs_usb kernel module:
+bash install_gs_usb.sh
+
+# Verify adapter; brings can1 up automatically:
+bash test_can_adapter_dstech.sh can1
+
+# Manual bring-up (if udev rule has not fired):
+sudo ip link set can1 up type can bitrate 1000000
+\end{lstlisting}
+
+% =========================================================================
+\section{V3.0 CAN protocol}
+\label{sec:v3}
+% =========================================================================
+
+\subsection{Unified extended-ID scheme}
+
+All V3.0 control modes use CAN 2.0B extended (29-bit) frames.
+The arbitration ID encodes both the packet type and the motor's ESC\_ID:
+\begin{equation}
+  \texttt{CAN\_ID} = (\texttt{PACKET\_TYPE} \ll 8) \;|\; \texttt{ESC\_ID}
+  \label{eq:canid}
+\end{equation}
+
+\begin{center}\small
+\begin{tabular}{rlll}
+\toprule
+\textbf{PACKET\_TYPE} & \textbf{Constant name} & \textbf{Payload} &
+\textbf{CAN\_ID (ESC=0x02)} \\
+\midrule
+0 & \texttt{SET\_DUTY}           & int32: duty $\times 10^5$    & \texttt{0x00000002} \\
+1 & \texttt{SET\_CURRENT}        & int32: amps $\times 10^3$    & \texttt{0x00000102} \\
+2 & \texttt{SET\_CURRENT\_BRAKE} & int32: amps $\times 10^3$    & \texttt{0x00000202} \\
+3 & \texttt{SET\_RPM}            & int32: ERPM (raw)             & \texttt{0x00000302} \\
+4 & \texttt{SET\_POS}            & int32: deg $\times 10^4$     & \texttt{0x00000402} \\
+5 & \texttt{SET\_ORIGIN\_HERE}   & 1 byte: 0=volatile, 1=flash  & \texttt{0x00000502} \\
+6 & \texttt{SET\_POS\_SPD}       & 8 bytes: pos+spd+acc         & \texttt{0x00000602} \\
+8 & \texttt{SET\_MIT}            & 8 bytes bit-packed (\S\ref{sec:mit}) & \texttt{0x00000802} \\
+\midrule
+0x29 & \emph{Feedback (rx only)} & 8 bytes: pos+spd+I+T+err     & \texttt{0x00002902} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Constants defined in \texttt{src/ak\_v3\_common.py};
+\texttt{src/ak\_v3\_can.py} calls \texttt{\_send\_eid(packet\_type, payload)}.
+
+\subsection{R-Link CAN Mode setting}
+
+Controls feedback delivery only -- not which command types are accepted.
+MIT and servo commands work in either mode.
+
+\begin{center}\small
+\begin{tabular}{lp{9cm}}
+\toprule
+Setting & Behaviour \\
+\midrule
+\textbf{Periodic Feedback} & Motor broadcasts feedback at \texttt{CAN Fdb Rate}
+                              (default 50\,Hz). Recommended for bench use. \\
+\textbf{Inquiry Feedback}  & Motor replies with one frame per command received. \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 % =========================================================================
-\section{What is the ``MIT CAN protocol''?}
+\section{MIT force-control mode}
 \label{sec:mit}
 % =========================================================================
 
-\subsection{Background}
+\subsection{Torque law}
 
-The MIT mini-cheetah actuator protocol was developed at MIT's
-Biomimetic Robotics Lab and first described in:
+The on-board controller implements:
+\begin{equation}
+  \tau_{\text{cmd}} =
+    K_p\,(q_{\text{des}} - q)
+  + K_d\,(\dot{q}_{\text{des}} - \dot{q})
+  + \tau_{ff}
+  \label{eq:mit}
+\end{equation}
 
-\begin{quote}
-  Ben Katz, \textit{A Low Cost Modular Actuator for Dynamic Robots},
-  M.Eng.\ thesis, MIT, 2019.
-\end{quote}
-
-The protocol sends one 8-byte CAN~2.0A standard frame per motor command
-cycle.  The frame packs five control parameters -- position, velocity,
-stiffness~($K_p$), damping~($K_d$), and feed-forward torque -- into a
-single tight bitfield.  The motor responds immediately with an 8-byte
-feedback frame containing position, velocity, and torque.
-
-This is \textbf{not} the same as CANopen, UAVCAN/DroneCAN, or any other
-higher-level protocol; it is a bare, vendor-specific bit-packing scheme
-over standard CAN 2.0A frames.
-
-\subsection{What is ``T-Motor CAN''?}
-
-\textbf{T-Motor CAN} is the popular name for a close variant of the
-MIT mini-cheetah protocol used by \textbf{T-Motor / CubeMars} products.
-The name comes from the \textbf{T-Motor} brand (same parent company as
-CubeMars) and is also referred to as:
-
-\begin{itemize}
-  \item \emph{MIT mode} (by CubeMars R-Link and documentation)
-  \item \emph{Mini-Cheetah protocol} (by the robotics community)
-  \item \emph{TMotorCANControl API} (by the open-source
-        \texttt{neurobionics/TMotorCANControl} library,
-        which is included as a reference in this repo under
-        \texttt{TMotorCANControl/})
-\end{itemize}
-
-All of the following motors use the same protocol:
-T-Motor AK series, CubeMars AK series, Damiao DM series (with minor
-frame differences), and many other MIT-derivative actuators.
-
-\subsection{Required physical connection}
+Sub-modes are selected by which parameters are nonzero:
 
 \begin{center}\small
-\begin{tabular}{lll}
+\begin{tabular}{llllll}
 \toprule
-Layer & Hardware & Notes \\
+Sub-mode & $K_p$ & $K_d$ & $q_{des}$ & $\dot{q}_{des}$ & $\tau_{ff}$ \\
 \midrule
-Host interface  & HDSC USB-to-CAN adapter (USB-ID \texttt{2e88:4603})
-                & Appears as \texttt{/dev/ttyACM0} on Linux \\
-Host-to-adapter & USB~2.0 full-speed serial at 921600\,bps
-                & The adapter does USB-UART internally \\
-Adapter-to-motor& CAN bus, two wires: \textbf{CAN\,H} and \textbf{CAN\,L}
-                & Twisted pair or shielded cable preferred \\
-Termination     & $120\,\Omega$ resistor between CAN\,H and CAN\,L
-                & Required at \emph{both ends} of the bus \\
-CAN bitrate     & 1\,Mbps
-                & Must match R-Link configuration \\
-Power           & 18--52\,V DC, $\ge$30\,A capable supply
-                & Separate from the logic/USB supply \\
+Position hold     & $> 0$ & $> 0$ & target & 0 & 0 \\
+Velocity tracking & 0     & $> 0$ & 0      & target & 0 \\
+Open-loop torque  & 0     & 0     & 0      & 0 & target \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\begin{figure}[ht]
-\centering
-\begin{tikzpicture}[every node/.style={font=\small},
-  box/.style={draw=black!50, rounded corners=4pt, inner sep=8pt,
-              text width=3.2cm, align=center, minimum height=1.2cm}]
+\textbf{Warning:} $K_p > 0$, $K_d = 0$ removes all damping -- motor
+oscillates or runs away.  Always set $K_d \ge 0.3$ with position commands.
 
-  \node[box, fill=blue!8]  (pc)  at (0,   0) {Jetson Orin Nano\\(Python driver)};
-  \node[box, fill=gray!12] (adp) at (5,   0) {HDSC USB-to-CAN\\adapter\\{\footnotesize\texttt{/dev/ttyACM0}}};
-  \node[box, fill=orange!10](mot) at (10,  0) {AK80-9 KV60\\{\footnotesize CAN ID 0x68}};
+\subsection{Bit-packing (verbatim from \texttt{AK-V3.ino})}
 
-  \draw[-Stealth, thick, blue!60]
-    (pc.east)  -- node[above, font=\footnotesize]{USB 921600\,bps} (adp.west);
-  \draw[Stealth-Stealth, thick, orange!70!black]
-    (adp.east) -- node[above, font=\footnotesize, align=center]{CAN\,H / CAN\,L\\1\,Mbps}   (mot.west);
+Each float is linearly mapped to an unsigned integer:
+\begin{align}
+  \texttt{float\_to\_uint}(x) &= \left\lfloor
+    \frac{x - x_{\min}}{x_{\max} - x_{\min}} \cdot (2^N - 1)
+  \right\rfloor \label{eq:f2u} \\
+  \texttt{uint\_to\_float}(u) &= \frac{u}{2^N - 1} \cdot (x_{\max} - x_{\min}) + x_{\min}
+  \label{eq:u2f}
+\end{align}
 
-  % Termination resistors
-  \node[font=\scriptsize, text=gray!70] at (5, -1.1) {$120\,\Omega$ at motor connector};
-  \node[font=\scriptsize, text=gray!70] at (5, -1.5) {$120\,\Omega$ at adapter connector};
-\end{tikzpicture}
-\caption{Physical connection chain.  The Python driver writes 30-byte
-         HDSC envelope frames to the USB serial port; the adapter
-         converts them to CAN 2.0A standard frames on the CAN bus.}
-\label{fig:connection}
-\end{figure}
+Bit widths and ranges for AK60-6 (from \texttt{src/ak\_v3\_common.py}):
 
-\subsection{MIT CAN frame structure}
+\begin{center}\small
+\begin{tabular}{llccc}
+\toprule
+Field & Symbol & Bits ($N$) & $x_{\min}$ & $x_{\max}$ \\
+\midrule
+Position      & $q$         & 16 & $-12.56$\,rad & $+12.56$\,rad \\
+Velocity      & $\dot{q}$   & 12 & $-60$\,rad/s  & $+60$\,rad/s  \\
+Stiffness     & $K_p$       & 12 & 0             & 500           \\
+Damping       & $K_d$       & 12 & 0             & 5             \\
+Feed-forward  & $\tau_{ff}$ & 12 & $-12$\,N$\cdot$m & $+12$\,N$\cdot$m \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-\subsubsection{Command frame (host $\to$ motor)}
+\begin{lstlisting}
+# src/ak_v3_common.py
+def float_to_uint(x, x_min, x_max, bits):
+    span = x_max - x_min
+    x = max(x_min, min(x_max, x))
+    return int((x - x_min) * ((1 << bits) - 1) / span)
 
-One 8-byte payload packed into standard CAN frame with \texttt{CAN\_ID = ESC\_ID}:
+def uint_to_float(u, x_min, x_max, bits):
+    return u * (x_max - x_min) / ((1 << bits) - 1) + x_min
+\end{lstlisting}
+
+\subsection{V3.0 MIT frame byte layout (Kp-first)}
+
+V3.0 places $K_p$ in bytes 0--1 (\textbf{Kp-first}), unlike the classic
+mini-cheetah layout (position-first) used by earlier T-Motor firmware:
+
+\begin{center}\small
+\begin{tabular}{cl}
+\toprule
+Byte & Content \\
+\midrule
+0 & \texttt{Kp[11:4]} \\
+1 & \texttt{Kp[3:0] | Kd[11:8]} \\
+2 & \texttt{Kd[7:0]} \\
+3 & \texttt{pos[15:8]} \\
+4 & \texttt{pos[7:0]} \\
+5 & \texttt{vel[11:4]} \\
+6 & \texttt{vel[3:0] | tau[11:8]} \\
+7 & \texttt{tau[7:0]} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Sent at extended CAN ID $(8 \ll 8) | \texttt{0x02} = \texttt{0x0802}$.
+Implemented in \texttt{AkV3Motor.set\_mit()}:
+
+\begin{lstlisting}
+def set_mit(self, p_des, v_des, kp, kd, t_ff):
+    L = self.limits
+    p_int  = float_to_uint(p_des, L.p_min,  L.p_max,  16)
+    v_int  = float_to_uint(v_des, L.v_min,  L.v_max,  12)
+    kp_int = float_to_uint(kp,    0.0,      L.kp_max, 12)
+    kd_int = float_to_uint(kd,    0.0,      L.kd_max, 12)
+    t_int  = float_to_uint(t_ff,  L.t_min,  L.t_max,  12)
+    buf = bytes([
+        (kp_int >> 4) & 0xFF,
+        ((kp_int & 0xF) << 4) | ((kd_int >> 8) & 0xF),
+        kd_int & 0xFF,
+        (p_int >> 8) & 0xFF,
+        p_int & 0xFF,
+        (v_int >> 4) & 0xFF,
+        ((v_int & 0xF) << 4) | ((t_int >> 8) & 0xF),
+        t_int & 0xFF,
+    ])
+    self._send_eid(CAN_PACKET_SET_MIT, buf)
+\end{lstlisting}
+
+\subsection{Feedback frame (CAN ID \texttt{0x2902})}
 
 \begin{center}\small
 \begin{tabular}{cll}
 \toprule
-Byte(s) & Contents & Bit layout \\
+Bytes & Encoding & Meaning \\
 \midrule
-0       & Position upper  & \texttt{q[15:8]} \\
-1       & Position lower  & \texttt{q[7:0]} \\
-2       & Velocity upper  & \texttt{dq[11:4]} \\
-3       & Velocity lower + $K_p$ upper & \texttt{dq[3:0] | Kp[11:8]} \\
-4       & $K_p$ lower     & \texttt{Kp[7:0]} \\
-5       & $K_d$ upper     & \texttt{Kd[11:4]} \\
-6       & $K_d$ lower + $\tau$ upper & \texttt{Kd[3:0] | tau[11:8]} \\
-7       & $\tau$ lower    & \texttt{tau[7:0]} \\
+0--1 & int16 BE, $\times 0.1$ & Position (degrees) \\
+2--3 & int16 BE, $\times 10$  & Speed (ERPM) \\
+4--5 & int16 BE, $\times 0.01$ & Phase current $I_q$ (A) \\
+6    & int8  & Driver-board MOS temperature (\textdegree C) \\
+7    & uint8 & Error code (0 = no fault) \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Bit-widths: position 16-bit, velocity 12-bit, $K_p$ 12-bit,
-$K_d$ 12-bit, $\tau$ 12-bit.  All scaled linearly:
-\[
-  \texttt{uint} = \left\lfloor
-    \frac{x + X_{\max}}{2\,X_{\max}} \cdot (2^{N}-1)
-  \right\rfloor
-  \quad\text{where }X_{\max} \in \{P_{\max}, V_{\max}, T_{\max}\}
-\]
+Decoded in \texttt{AkV3Motor.parse\_feedback()}:
 
-For AK60-6: $P_{\max}=12.5$\,rad, $V_{\max}=45$\,rad/s,
-$T_{\max}=15$\,N$\cdot$m.
+\begin{lstlisting}
+def parse_feedback(self, msg):
+    if msg.arbitration_id != (FEEDBACK_PACKET_TYPE << 8) | self.can_id:
+        return False
+    d = msg.data
+    self.pos_deg   = int.from_bytes(d[0:2], "big", signed=True) * 0.1
+    self.spd_erpm  = int.from_bytes(d[2:4], "big", signed=True) * 10.0
+    self.current_a = int.from_bytes(d[4:6], "big", signed=True) * 0.01
+    self.temp_c    = d[6]
+    self.error     = d[7]
+    return True
+\end{lstlisting}
 
-\subsubsection{Feedback frame (motor $\to$ host)}
-
-The motor replies with \texttt{CAN\_ID = ESC\_ID} (not a separate master
-address as with the Damiao motor):
-
-\begin{center}\small
-\begin{tabular}{cll}
-\toprule
-Byte & Contents & Notes \\
-\midrule
-0 & Motor ESC\_ID    & Redundant with CAN ID \\
-1--2 & Position (16-bit) & same scaling as command \\
-3--4 & Velocity (upper 8 + lower 4) & 12-bit, $\pm V_{\max}$ \\
-4--5 & Torque (lower 4 + 8)         & 12-bit, $\pm T_{\max}$ \\
-6   & MOSFET temperature (\textdegree C) & not decoded in current driver \\
-7   & Rotor temperature (\textdegree C)  & not decoded in current driver \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsubsection{Special command frames}
-
-Eight-byte payloads with the last byte set to a magic value; the other
-seven bytes are \texttt{0xFF}:
-
-\begin{center}\small
-\begin{tabular}{ll}
-\toprule
-Payload (hex) & Function \\
-\midrule
-\texttt{FF FF FF FF FF FF FF FC} & Enable motor (torque ON) \\
-\texttt{FF FF FF FF FF FF FF FD} & Disable motor (torque OFF) \\
-\texttt{FF FF FF FF FF FF FF FE} & Set current position as zero \\
-\bottomrule
-\end{tabular}
-\end{center}
+\texttt{AkV3Bench.read\_state()} converts to SI units:
+\begin{align}
+  q_{\text{rad}} &= q_{\deg} \cdot \tfrac{\pi}{180} \label{eq:deg2rad} \\
+  \dot{q}_{\text{rad/s}} &= \frac{\text{ERPM}}{p_\text{pairs}} \cdot \frac{2\pi}{60}
+  \qquad (p_\text{pairs} = 14 \text{ for AK60-6})
+  \label{eq:erpm2rads}
+\end{align}
 
 % =========================================================================
-\section{Two operating modes -- the critical distinction}
-\label{sec:modes}
+\section{Servo-mode commands}
+\label{sec:servo}
 % =========================================================================
 
-The AK80-9 has \textbf{two fundamentally different CAN protocols} that
-cannot be mixed.  The mode is stored in flash by R-Link and takes
-effect after a power cycle.
-
-\begin{center}\small
-\begin{tabular}{p{2.8cm}p{4.8cm}p{4.8cm}}
-\toprule
- & \textbf{MIT Mode} & \textbf{Servo Mode (``Periodic Feedback'')} \\
-\midrule
-R-Link setting  & CAN Mode = \textbf{Inquiry Feedback}
-                & CAN Mode = \textbf{Periodic Feedback} \\
-CAN frame type  & Standard 2.0A (11-bit ID)
-                & Extended 2.0B (29-bit ID) \\
-CAN ID scheme   & Command: \texttt{ESC\_ID}\newline
-                  Feedback: \texttt{ESC\_ID}
-                & Feedback: \texttt{(CMD\_TYPE $\ll$ 8) | ESC\_ID} \\
-Frame format    & 8-byte MIT bit-packed
-                & VESC/FESC floating-point extended protocol \\
-Our driver      & \texttt{cubemars\_bus.py} \textbf{(supported)}
-                & \textbf{Not supported} (extended protocol needed) \\
-TMotorCANControl& \texttt{MIT\_CAN} class \textbf{(supported)}
-                & \texttt{servo\_can} class \\
-Feedback timing & On request (reply to MIT poll)
-                & Autonomous at configured rate (50\,Hz default) \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\begin{figure}[ht]
-\centering
-\begin{tikzpicture}[every node/.style={font=\small},
-  mbox/.style={draw=black!40, rounded corners=4pt, inner sep=8pt,
-               text width=5.2cm, align=center, minimum height=1.1cm}]
-
-  \node[font=\bfseries, text=green!50!black] at (-3.4, 2.0)
-    {MIT Mode (our driver)};
-  \node[font=\bfseries, text=red!60!black] at ( 3.6, 2.0)
-    {Servo Mode (not supported)};
-  \draw[dashed, black!20, line width=1pt] (0, 2.4) -- (0, -5.8);
-
-  % MIT path
-  \node[mbox, fill=green!7]  (m1) at (-3.4,  0.5)
-    {Host sends 8-byte MIT frame\\to \texttt{CAN\_ID = 0x68}};
-  \node[mbox, fill=green!7]  (m2) at (-3.4, -1.4)
-    {Motor replies with\\8-byte feedback frame\\(\texttt{CAN\_ID = 0x68})};
-  \node[mbox, fill=green!14] (m3) at (-3.4, -3.4)
-    {\texttt{cubemars\_bus.py}\\decodes \texttt{q, dq, tau}\\from MIT layout};
-  \node[mbox, fill=green!14] (m4) at (-3.4, -5.2)
-    {Control loop works};
-  \draw[-Stealth, green!60!black, thick] (m1) -- (m2);
-  \draw[-Stealth, green!60!black, thick] (m2) -- (m3);
-  \draw[-Stealth, green!60!black, thick] (m3) -- (m4);
-
-  % Servo path
-  \node[mbox, fill=red!7]   (s1) at ( 3.6,  0.5)
-    {Motor auto-broadcasts\\extended-ID frames at 50\,Hz\\(\texttt{CAN\_ID = 0x2968})};
-  \node[mbox, fill=red!7]   (s2) at ( 3.6, -1.4)
-    {\texttt{cubemars\_bus.py}\\ignores frames (wrong\\frame format \& ID)};
-  \node[mbox, fill=red!14]  (s3) at ( 3.6, -3.4)
-    {\texttt{read\_state()} returns\\cached zeros forever};
-  \node[mbox, fill=red!14]  (s4) at ( 3.6, -5.2)
-    {Motor does not respond\\to MIT commands};
-  \draw[-Stealth, red!60!black, thick] (s1) -- (s2);
-  \draw[-Stealth, red!60!black, thick] (s2) -- (s3);
-  \draw[-Stealth, red!60!black, thick] (s3) -- (s4);
-\end{tikzpicture}
-\caption{Divergent behaviour depending on the CAN Mode setting in R-Link.
-         The bench motor was found in Servo Mode on 12~May~2026 during
-         initial bring-up; see Section~\ref{sec:scan} for the diagnostic.}
-\label{fig:modes}
-\end{figure}
-
-% =========================================================================
-\section{Bench bring-up and the CAN-ID discovery problem}
-\label{sec:scan}
-% =========================================================================
-
-\subsection{Timeline}
-
-During initial bring-up (12~May~2026) the motor was found to be
-broadcasting extended-CAN frames at all times but not responding to MIT
-poll commands.  Investigation steps:
-
-\begin{enumerate}
-  \item \textbf{R-Link screenshot showed:}
-        \texttt{CAN Mode = Periodic Feedback}, \texttt{CAN ID = ID:~4}.
-        This placed the motor in \emph{Servo mode}, not MIT mode.
-  \item \textbf{MIT poll scan} (\texttt{tests/cubemars/00\_scan\_can\_id.py})
-        sent a null MIT frame (\texttt{Kp=Kd=tau=0}) to every CAN ID in
-        \texttt{0x01..0x7F}.  Result: 1087 frames received, all from
-        extended CAN ID \textbf{\texttt{0x2968}}.
-  \item Decoding the extended ID: \texttt{0x2968 = (0x29 << 8) | 0x68}
-        where \texttt{0x29} is the VESC/CubeMars servo status command
-        type and \texttt{0x68 = 104} is the motor's ESC\_ID.
-  \item \textbf{Conclusion:} motor ESC\_ID is \textbf{104 (0x68)}.
-        The CAN ID shown in R-Link (\texttt{ID:~4}) was from a previous
-        \emph{different} configuration page and was stale.
-\end{enumerate}
-
-\subsection{What the extended CAN ID means}
-
-In Servo mode, the motor uses the VESC/FESC extended-CAN protocol:
-
-\begin{center}\small
-\begin{tabular}{ll}
-\toprule
-Field & Value \\
-\midrule
-Full extended CAN ID (29-bit) & \texttt{0x2968} = 10600 \\
-Command type byte (\texttt{cmd = id >> 8}) & \texttt{0x29} = 41 = \texttt{COMM\_GET\_VALUES} \\
-Motor ESC\_ID byte (\texttt{mid = id \& 0xFF}) & \texttt{0x68} = 104 \\
-Broadcast rate & 50\,Hz (as configured in R-Link) \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsection{Action required}
-
-To use \texttt{cubemars\_bus.py} (MIT mode), open R-Link and apply:
+Servo commands run the firmware's internal PID loops (no manual gain tuning).
 
 \begin{center}\small
 \begin{tabular}{lll}
 \toprule
-R-Link field & Current value & Required value \\
+Method on \texttt{AkV3Motor} & \texttt{write()} data name & Notes \\
 \midrule
-  CAN Mode    & Periodic Feedback & \textbf{Inquiry Feedback} (= MIT mode) \\
-CAN Bitrate & 1\,Mbps           & 1\,Mbps (keep) \\
-CAN ID      & 4                 & \textbf{104} (or any value -- update \texttt{motor\_config.py}) \\
+\texttt{set\_position\_deg(deg)} & \texttt{goal\_position\_deg}
+  & Firmware position PID; deg in $[-36000, 36000]$ \\
+\texttt{set\_rpm(erpm)} & \texttt{goal\_speed\_erpm}
+  & Firmware velocity PID \\
+\texttt{set\_pos\_spd(deg, erpm, acc)} & \texttt{goal\_pos\_spd}
+  & Trapezoidal position-velocity profile \\
+\texttt{set\_duty(frac)} & \texttt{goal\_duty}
+  & Open-loop duty in $[-1, 1]$ \\
+\texttt{set\_current(amps)} & ---
+  & Direct $I_q$ current loop \\
+\texttt{set\_brake\_current(amps)} & ---
+  & Braking current hold \\
+\texttt{set\_origin(permanent)} & ---
+  & Latch current angle as zero \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Click \textbf{Write}, then \textbf{power-cycle the motor} (the mode
-change takes effect on reboot, not immediately).
-
-After switching, rerun the scan:
+Trapezoidal move example:
 \begin{lstlisting}
-python tests/cubemars/00_scan_can_id.py --start 1 --end 127
-\end{lstlisting}
-You should see one MIT feedback frame at the configured ESC\_ID (not
-an extended CAN ID), and the decoder will report valid \texttt{q, dq, tau}.
-
-% =========================================================================
-\section{Calibration procedure}
-\label{sec:calibration}
-% =========================================================================
-
-Unlike the Damiao motor, the AK80-9 has \textbf{no firmware parameter
-read API} accessible over CAN.  All calibration steps use R-Link.
-
-\subsection{Required steps (one-time after assembly or firmware flash)}
-
-\begin{enumerate}
-  \item \textbf{Motor Identification} -- R-Link spins the motor in both
-        directions to measure winding resistance, inductance, and
-        back-EMF constant.  Motor must be unloaded (disconnected from
-        gearbox output if possible, or at least free to spin).
-  \item \textbf{Encoder Identification} -- R-Link samples the encoder
-        at many positions and builds a lookup table for pole-pair offset.
-        Must be done immediately after Motor Identification.
-  \item \textbf{Write Parameters} -- Click \emph{Write} in R-Link to
-        flash the identified values.  Save \texttt{.AppParams} and
-        \texttt{.McParams} files as backups.
-\end{enumerate}
-
-\noindent Re-calibrate after:
-\begin{itemize}
-  \item Swapping any two of the three motor phase wires.
-  \item Replacing the motor or gearbox.
-  \item Flashing new firmware.
-\end{itemize}
-
-\subsection{Software zero position}
-
-\texttt{cubemars\_bus.py} supports software-latching of the current
-angle as $0\,\mathrm{rad}$ via the special frame
-\texttt{[FF FF FF FF FF FF FF FE]}:
-
-\begin{lstlisting}
-with open_cubemars_bus(set_zero=True) as bus:
-    # motor's current angle is now 0 rad for this session
-    bus.write("goal_position", {"j1": 1.0}, kp=30, kd=1.0)
+with open_ak_v3_bench() as bus:
+    # Move to 90 deg, cruise at 1000 ERPM, 30000 ERPM/s^2 accel:
+    bus.write("goal_pos_spd", {"j1": 90.0},
+              dq_des=1000, acc_erpm_s2=30_000)
 \end{lstlisting}
 
-This is volatile -- it resets on power-cycle.
-
 % =========================================================================
-\section{MIT control modes}
-\label{sec:control}
+\section{Serial UART protocol and parameter read}
+\label{sec:serial}
 % =========================================================================
 
-The five MIT parameters give access to three practical control modes
-by choosing which are nonzero:
+\subsection{Frame format (\S4.3.2 of the V3.0.1 manual)}
 
 \begin{center}\small
-\begin{tabular}{lllll}
+\begin{tabular}{cl}
 \toprule
-Mode & $K_p$ & $K_d$ & $q_{\text{des}}$ & $\dot{q}_{\text{des}}$ \\
+Byte(s) & Content \\
 \midrule
-Position hold     & $>0$  & $>0$  & target rad & 0 \\
-Velocity tracking & 0     & $>0$  & 0          & target rad/s \\
-Open-loop torque  & 0     & 0     & 0          & 0 \\
+0       & Header \texttt{0xAA} \\
+1       & Data length $N$ (command byte + payload) \\
+2       & Command byte (\texttt{comm\_id}) \\
+3..N+1  & Payload bytes \\
+N+2     & CRC16 high byte \\
+N+3     & CRC16 low byte \\
+N+4     & Tail \texttt{0xBB} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\textbf{Warning:} never command $K_p > 0$, $K_d = 0$ in position mode.
-Without damping the motor oscillates or runs away.
+CRC-16 over bytes 2..(N+1) using CCITT polynomial table (\S4.3.2.3).
+Verification: \texttt{crc16([0x45])} $= \texttt{0x1861}$, giving the
+full \texttt{COMM\_GET\_VALUES} request: \texttt{AA 01 45 18 61 BB}.
 
-\subsection{Recommended gains for AK60-6}
+\subsection{\texttt{COMM\_GET\_VALUES} (0x45) -- full status reply}
 
 \begin{center}\small
-\begin{tabular}{llll}
+\begin{tabular}{cllr}
 \toprule
-Task & $K_p$ & $K_d$ & Notes \\
+Data bytes & Type & Field & Scale \\
 \midrule
-Stiff position hold  & 80--150 & 2.0--4.0  & Heavy load; increase $K_d$ first \\
-Compliant hold       & 30--60  & 1.0--2.0  & Lighter load or back-drivable \\
-Impedance (teaching) & 0--10   & 0.3--0.8  & Very compliant; record demos \\
-Velocity tracking    & 0       & 1.0--3.0  & $K_p=0$ mandatory \\
-Torque (open-loop)   & 0       & 0         & Max 1\,N$\cdot$m unloaded (T\_MAX=15\,N$\cdot$m) \\
+0     & cmd byte    & (0x45) & --- \\
+1--2  & int16 BE    & MOS temperature     & $\div 10$\,\textdegree C \\
+3--4  & int16 BE    & Motor temperature   & $\div 10$\,\textdegree C \\
+5--8  & int32 BE    & Output current      & $\div 100$\,A \\
+9--12 & int32 BE    & Input current       & $\div 100$\,A \\
+13--16& int32 BE    & $I_d$ current       & $\div 100$\,A \\
+17--20& int32 BE    & $I_q$ current       & $\div 100$\,A \\
+21--22& int16 BE    & Duty cycle          & $\div 1000$ \\
+23--26& int32 BE    & Motor speed         & ERPM \\
+27--28& int16 BE    & Input voltage       & $\div 10$\,V \\
+29--52& ---         & Reserved 24 bytes   & --- \\
+53    & uint8       & Status/error code   & --- \\
+54--57& float32 BE  & Outer-loop position & rad \\
+58    & uint8       & Motor ID            & --- \\
+59--64& ---         & Reserved 6 bytes    & --- \\
+65--68& int32 BE    & $V_d$ voltage       & $\div 1000$\,V \\
+69--72& int32 BE    & $V_q$ voltage       & $\div 1000$\,V \\
+73--76& int32 BE    & Control mode        & raw \\
+77--80& float32 BE  & Encoder angle       & deg \\
+81--84& float32 BE  & Outer encoder angle & deg \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\subsection{Impedance / kinesthetic teaching}
+\texttt{COMM\_GET\_VALUES\_SETUP} (0x10) accepts a 4-byte big-endian bitmask
+to select a subset of fields (returned in the same order).
 
-To make the motor back-drivable for demonstration recording:
-
-\begin{lstlisting}
-with open_cubemars_bus() as bus:
-    while recording:
-        q, dq, tau = bus.read_state()["j1"]
-        bus.write("goal_position", {"j1": q},   # spring at current pos
-                  kp=5.0, kd=0.5)               # very soft
-        record(t, q, dq, tau)
+\paragraph{Usage:}
+\begin{lstlisting}[numbers=none]
+sudo python3 tests/cubemars/00_read_params.py [--port /dev/ttyUSB0]
 \end{lstlisting}
-
-Replay with higher stiffness:
-\begin{lstlisting}
-bus.write("goal_position", {"j1": target_q}, kp=60, kd=2.0)
-\end{lstlisting}
-
-% =========================================================================
-\section{Multi-motor hardware wiring and power distribution}
-\label{sec:hardware}
-% =========================================================================
-
-\subsection{Single motor (bench configuration)}
-
-The bench configuration uses one AK60-6 motor connected to a Jetson Nano
-via a single HDSC USB-to-CAN adapter:
-
-\begin{center}
-\begin{tabular}{lll}
-\toprule
-Signal / Power & Source & Destination \\
-\midrule
-USB data       & Jetson USB Type-A & HDSC USB Type-C \\
-CAN\,H         & HDSC adapter       & Motor CAN connector \\
-CAN\,L         & HDSC adapter       & Motor CAN connector \\
-$+48\text{V}$  & PSU (+) 25--30\,A   & Motor XT30 connector (+) \\
-GND            & PSU (−)            & Motor XT30 connector (−) \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-Power supply requirements: $48\text{V}$ rated, $\ge 15\text{A}$ continuous.
-CAN termination: $120\,\Omega$ resistor between CAN\,H and CAN\,L at
-the motor end.
-
-\subsection{Two motors (parallel configuration)}
-
-Two CubeMars motors can be operated simultaneously on a single CAN bus
-by assigning them different CAN IDs via R-Link.  \textbf{Key principle:}
-both motors share the same CAN\,H/CAN\,L wires (daisy-chained) and
-receive power from the same $48\text{V}$ supply in parallel.
-
-\subsubsection{Power distribution (star-point grounding)}
-
-\begin{center}\small
-\begin{tabular}{lll}
-\toprule
-Signal & Topology & Notes \\
-\midrule
-$+48\text{V}$ & Parallel  & Both motor XT30(+) connect to PSU(+) \\
-GND (star)    & Common junction & Both motor XT30(−) connect to single \\
-              &           & junction point (``star''), then to PSU(−) \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-The \textbf{star point} is a central ground junction where both motor
-return wires connect before returning to the PSU negative terminal.
-This topology prevents ground loops and reduces noise on the CAN bus
-(important for CAN signal integrity).
-
-\paragraph{Complete wiring diagram (Jetson to dual motors with power distribution):}
-
-\vspace{0.5cm}
-\begin{center}
-\begin{tikzpicture}[scale=0.9, every node/.style={font=\footnotesize},
-  box/.style={draw=black!50, rounded corners=3pt, inner sep=5pt,
-              text width=2.5cm, align=center, minimum height=0.9cm},
-  small_box/.style={draw=black!40, rounded corners=2pt, inner sep=3pt,
-                     text width=2.0cm, align=center, minimum height=0.7cm},
-  component/.style={box}]
-
-  % =================== TOP ROW: JETSON & CABLE & ADAPTER ===================
-  \node[component, fill=blue!8] (jet) at (0, 8) {Jetson Nano\\USB Type-A};
-  
-  \node[component, fill=cyan!5] (cable) at (3.5, 8) {USB Cable\\Type-A to\\Type-C};
-  
-  \node[component, fill=orange!8] (adp) at (7, 8) {HDSC USB-to-CAN\\Adapter\\(921600 baud)};
-  
-  % =================== CAN BUS LAYER ===================
-  \node[component, fill=purple!6] (canbus) at (7, 5.5) {CAN Bus (1 Mbps)\\CAN\_H, CAN\_L\\(twisted pair)};
-  
-  % =================== MOTORS ===================
-  \node[component, fill=green!8] (m1) at (10.5, 6.8) {Motor J1\\AK60-6\\XT30 + CAN};
-  \node[component, fill=green!8] (m2) at (10.5, 4.2) {Motor J2\\AK60-6\\XT30 + CAN};
-  
-  % =================== POWER SUPPLY ===================
-  \node[component, fill=red!6] (psu) at (0, 2.5) {48V Power Supply\\25--30A rated};
-  
-  \node[small_box, fill=red!10] (psu_pos) at (-0.7, 3.8) {PSU\\$+48\text{V}$};
-  \node[small_box, fill=red!10, draw=red!50, line width=1.5pt] (psu_gnd) at (0.7, 1.2) {PSU GND\\(star)};
-  
-  % =================== STAR POINT ===================
-  \node[circle, draw=red!60, line width=2.5pt, inner sep=5pt, fill=red!5] (star) at (6, 2) {$\star$};
-  \node[font=\tiny, color=red!70, below=2pt of star] {common\\ground};
-  
-  % =================== CONNECTIONS: DATA FLOW ===================
-  \draw[-Stealth, thick, blue!60]
-    (jet.east) -- node[above, font=\tiny]{USB} (cable.west);
-  
-  \draw[-Stealth, thick, blue!60]
-    (cable.east) -- node[above, font=\tiny]{Type-C} (adp.west);
-  
-  % USB-to-CAN to CAN bus
-  \draw[-Stealth, thick, orange!70]
-    (adp.south) -- node[right, font=\tiny]{CAN H/L} (canbus.north);
-  
-  % CAN bus to motors
-  \draw[-Stealth, thick, purple!70, bend left=15]
-    (canbus.east) -- node[above, font=\tiny]{CAN\_H/L} (m1.west);
-  \draw[-Stealth, thick, purple!70, bend right=15]
-    (canbus.east) -- node[below, font=\tiny]{CAN\_H/L} (m2.west);
-  
-  % =================== CONNECTIONS: POWER DISTRIBUTION ===================
-  % PSU + to Motors (parallel)
-  \draw[-Stealth, very thick, red!70]
-    (psu_pos.east) -- ++(0.5, 0) 
-    -- (10, 7.2) node[pos=0.7, right, font=\tiny]{$+48\text{V}$}
-    -- (m1.west);
-    
-  \draw[-Stealth, very thick, red!70]
-    (psu_pos.east) -- ++(0.5, 0)
-    -- (10, 3.8) node[pos=0.7, right, font=\tiny]{$+48\text{V}$}
-    -- (m2.west);
-  
-  % PSU GND to star point
-  \draw[-Stealth, very thick, red!60]
-    (psu_gnd.east) -- node[below, font=\tiny]{GND} (star.west);
-  
-  % Motors GND to star point
-  \draw[Stealth-, very thick, red!50]
-    (m1.south) -- ++(0, -0.4) -- (6.5, 2.8) -- (star.east);
-  \draw[Stealth-, very thick, red!50]
-    (m2.south) -- ++(0, 0.4) -- (6.5, 1.2) -- (star.east);
-    
-  % =================== LEGEND / ANNOTATIONS ===================
-  \node[font=\tiny, text=blue!60, below left] at (0, 0.8) {\textbf{Legend:}};
-  \node[font=\tiny, text=blue!60] at (0, 0.3) {Blue: USB/data  |  Orange: CAN protocol  |  Red: Power/ground};
-
-\end{tikzpicture}
-\end{center}
-
-\subsubsection{Power supply sizing}
-
-\begin{center}\small
-\begin{tabular}{lll}
-\toprule
-Motors & Rated current each & Total continuous \\
-\midrule
-1$\times$AK60-6  & 10\,A & 10\,A \\
-2$\times$AK60-6  & 10\,A & \textbf{20\,A} \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\textbf{Recommendation:} use a $48\text{V}$ power supply rated for
-\emph{at least} 25--30\,A continuous.  This provides 1.25--1.5$\times$
-safety margin above the 20\,A sum and accommodates transient current
-spikes during acceleration.
-
-\subsubsection{CAN bus termination (two motors)}
-
-With two motors on the same CAN bus, place a single $120\,\Omega$
-termination resistor at the far end (typically at the last motor or at
-the HDSC adapter).  Do \emph{not} place terminators at both ends on a
-short bus (a few meters or less) as this can introduce reflection issues.
-
-\subsubsection{Configuration for two motors in Python}
-
-Update \texttt{src/motor\_config.py} to define both motors:
-
-\begin{lstlisting}
-DEFAULT_CUBEMARS_BENCH_CONFIG = CubeMarsBusConfig(
-    port="/dev/ttyACM0",
-    baudrate=921600,
-    motors={
-        "j1": CubeMarsMotorConfig(can_id=0x01, model="AK60-6"),
-        "j2": CubeMarsMotorConfig(can_id=0x02, model="AK60-6"),
-    },
-)
-\end{lstlisting}
-
-Then in test scripts, use the same context-manager idiom:
-
-\begin{lstlisting}
-with open_cubemars_bus() as bus:
-    # Read both motors in one pass
-    state = bus.read_state()
-    q1, dq1, tau1 = state["j1"]
-    q2, dq2, tau2 = state["j2"]
-    
-    # Command both motors simultaneously
-    bus.write("goal_position",
-              {"j1": 1.57, "j2": -0.5},
-              kp=30, kd=1.0)
-\end{lstlisting}
-
-Each motor responds to its own CAN ID; the shared HDSC adapter
-multiplexes all frames on the same serial port.
-
-\textbf{Important:} Run \texttt{tests/cubemars/00\_scan\_can\_id.py}
-on each motor individually to confirm its CAN ID before adding it to
-the config dict.
-
-% =========================================================================
-\section{HDSC USB-to-CAN adapter -- frame envelope}
-\label{sec:hdsc}
-% =========================================================================
-
-The Python driver does not use a SocketCAN or PCAN interface; it writes
-a vendor-specific 30-byte serial envelope directly to the HDSC adapter.
-The adapter converts this internally to a CAN 2.0A standard frame.
-
-\subsubsection{Transmit envelope (30 bytes, host $\to$ adapter)}
-
-\begin{center}\footnotesize
-\begin{tabular}{ccp{7cm}}
-\toprule
-Bytes & Value (hex) & Meaning \\
-\midrule
-0     & \texttt{55}          & Start-of-frame \\
-1     & \texttt{AA}          & Start-of-frame \\
-2     & \texttt{1E}          & Frame length = 30 \\
-3     & \texttt{03}          & Command type (send CAN frame) \\
-4--8  & \texttt{01 00 00 00 0A} & Fixed header fields \\
-9--12 & \texttt{00 00 00 00} & Reserved \\
-13    & \texttt{CAN\_ID[7:0]} & CAN ID lower byte = ESC\_ID \\
-14    & \texttt{CAN\_ID[10:8]} & CAN ID upper bits (for IDs $\le$0x7FF always 0) \\
-15--20& \texttt{00 00 08 00 00 00} & Fixed (DLC=8) \\
-21--28& payload & 8-byte MIT payload \\
-29    & (computed)   & Unused / padding \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsubsection{Receive frame (16 bytes, adapter $\to$ host)}
-
-\begin{center}\footnotesize
-\begin{tabular}{ccp{6cm}}
-\toprule
-Bytes & Value (hex) & Meaning \\
-\midrule
-0     & \texttt{AA}          & Start byte \\
-1     & \texttt{11}          & Command type (motor feedback) \\
-2     & \texttt{08}          & DLC = 8 \\
-3--6  & CAN ID (4-byte LE)   & For MIT: CAN\_ID = ESC\_ID \\
-7--14 & payload              & 8-byte MIT feedback payload \\
-15    & \texttt{55}          & End byte \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\noindent The driver scans for \texttt{0xAA} start / \texttt{0x55} end
-markers (16 bytes apart) and discards partial frames.
-
-\paragraph{Servo-mode extended CAN ID.}
-When the motor is in Servo~Mode, the feedback CAN ID is 29-bit
-(\texttt{0x2968} for our motor), but the HDSC adapter still delivers
-it in the 4-byte little-endian field (bytes~3--6).  The driver compares
-against the configured ESC\_ID (\texttt{0x68}) and these 4 bytes will
-never match (they decode to \texttt{0x00002968} = 10600), so \emph{all
-servo-mode frames are silently discarded}.  This is the root cause of
-the ``all zeros'' symptom.
 
 % =========================================================================
 \section{Python driver architecture}
 \label{sec:driver}
 % =========================================================================
 
+\subsection{Source file map}
+
 \begin{center}\small
-\begin{tabular}{ll}
+\begin{tabular}{lp{9.5cm}}
 \toprule
 File & Role \\
 \midrule
-\texttt{src/motor\_config.py}   & Declarative config dataclasses + \texttt{DEFAULT\_CUBEMARS\_BENCH\_CONFIG} \\
-\texttt{src/cubemars\_bus.py}  & Self-contained MIT bus driver (\texttt{CubemarsMotorsBus}) \\
-\texttt{src/\_common.py}       & \texttt{open\_cubemars\_bus()} context-manager helper \\
-\texttt{tests/cubemars/}       & Numbered test scripts 00--07 \\
+\texttt{src/ak\_v3\_common.py}
+  & Constants: \texttt{AK\_V3\_LIMITS}, packet-type IDs,
+    \texttt{float\_to\_uint}, \texttt{uint\_to\_float} \\
+\texttt{src/ak\_v3\_can.py}
+  & \texttt{AkV3Motor} -- low-level single-motor CAN driver \\
+\texttt{src/\_common.py}
+  & \texttt{AkV3Bench} + \texttt{open\_ak\_v3\_bench()} --
+    high-level context-manager API used by all test scripts \\
+\texttt{src/motor\_config.py}
+  & \texttt{CubeMarsMotorConfig}, \texttt{CubeMarsBusConfig},
+    \texttt{DEFAULT\_CUBEMARS\_BENCH\_CONFIG} \\
+\texttt{tests/cubemars/}
+  & Probe/diagnostic scripts (\texttt{00\_*}) and control scripts (01--07) \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\subsection{Context-manager idiom (all tests)}
+\subsection{\texttt{AkV3Motor} -- low-level}
+
+Wraps a \texttt{can.BusABC} (SocketCAN) and exposes one method per packet
+type, plus \texttt{parse\_feedback()} / \texttt{poll\_feedback()}.
 
 \begin{lstlisting}
-from _common import open_cubemars_bus
+import can
+from ak_v3_can import AkV3Motor
 
-with open_cubemars_bus(set_zero=True) as bus:
-    bus.write("goal_position", {"j1": 1.57}, kp=30, kd=1.0)
-    q, dq, tau = bus.read_state()["j1"]
+bus   = can.Bus(channel="can1", interface="socketcan")
+motor = AkV3Motor(bus, can_id=0x02, model="AK60-6")
+
+motor.set_mit(p_des=0.0, v_des=0.0, kp=0.0, kd=0.0, t_ff=0.0)
+if motor.poll_feedback(timeout=0.1):
+    print(motor.pos_deg, motor.spd_erpm, motor.current_a)
+
+bus.shutdown()
 \end{lstlisting}
 
-\subsection{Test script inventory}
+\subsection{\texttt{AkV3Bench} -- high-level context manager}
+
+Adds lifecycle management (\texttt{connect}/\texttt{disconnect}/context
+manager), drain/flush, and a unified \texttt{write()} / \texttt{read\_state()}
+API that mirrors \texttt{DamiaoBus}.
+
+\paragraph{Context-manager idiom (used by every test script):}
+
+\begin{lstlisting}
+from _common import open_ak_v3_bench
+
+with open_ak_v3_bench(set_zero=True) as bus:
+    bus.write("goal_position", {"j1": 1.57}, kp=60, kd=1.5)
+    q, dq, ia = bus.read_state()["j1"]
+    # q  : output-shaft position (rad)
+    # dq : output-shaft speed    (rad/s)
+    # ia : phase current Iq      (A)  -- NOT torque in N.m
+\end{lstlisting}
+
+\paragraph{\texttt{write()} data names:}
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+\texttt{data\_name} & Command & Key kwargs \\
+\midrule
+\texttt{goal\_position}      & MIT position hold    & \texttt{kp}, \texttt{kd}, \texttt{dq\_des}, \texttt{tau\_ff} \\
+\texttt{goal\_velocity}      & MIT velocity track   & \texttt{kd}, \texttt{tau\_ff} \\
+\texttt{goal\_torque}        & MIT open-loop torque & --- \\
+\texttt{mit\_command}        & Raw MIT pass-through & \texttt{kp}, \texttt{kd}, \texttt{dq\_des}, \texttt{tau\_ff} \\
+\texttt{goal\_position\_deg} & Servo position PID   & --- (degrees) \\
+\texttt{goal\_pos\_spd}      & Servo pos-vel profile & \texttt{dq\_des} (ERPM), \texttt{acc\_erpm\_s2} \\
+\texttt{goal\_speed\_erpm}   & Servo velocity PID   & --- \\
+\texttt{goal\_duty}          & Servo duty cycle     & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Reading state:}
+\begin{lstlisting}
+# SI units -- q (rad), dq (rad/s), ia (A):
+q, dq, ia = bus.read_state()["j1"]
+
+# Native units -- pos (deg), ERPM, ia (A), temp (C), error code:
+pos, erpm, ia, tc, err = bus.read_raw()["j1"]
+\end{lstlisting}
+
+\texttt{read\_state()} sends one zero-torque MIT frame first to elicit a
+fresh feedback reply (in Inquiry-Feedback mode), then polls
+\texttt{poll\_feedback()}.
+
+\paragraph{Converting $I_q$ to torque:}
+$\tau\,[\text{N$\cdot$m}] = I_q\,[\text{A}] \times K_t\,[\text{N$\cdot$m/A}]$
+where $K_t \approx 0.12$\,N$\cdot$m/A for AK60-6 KV80
+(from R-Link Motor Identification result).
+
+% =========================================================================
+\section{MIT control modes -- theory and recommended gains}
+\label{sec:control}
+% =========================================================================
+
+\subsection{Position hold}
+
+From Eq.~\eqref{eq:mit} with $\dot{q}_{\text{des}} = 0$:
+$\tau = K_p(q_{\text{des}} - q) - K_d\dot{q}$.
+Motor acts as a spring ($K_p$) with viscous damping ($K_d$).
+
+\begin{lstlisting}
+bus.write("goal_position", {"j1": math.radians(30)}, kp=60, kd=1.5)
+q, dq, ia = bus.read_state()["j1"]
+\end{lstlisting}
+
+\subsection{Velocity tracking}
+
+$K_p = 0$, $K_d > 0$: $\tau = K_d(\dot{q}_{\text{des}} - \dot{q})$.
+No position restoring force.
+
+\begin{lstlisting}
+bus.write("goal_velocity", {"j1": 1.0}, kd=1.5)   # 1 rad/s
+\end{lstlisting}
+
+\subsection{Open-loop torque}
+
+$K_p = K_d = 0$: $\tau_{\text{cmd}} = \tau_{ff}$.  No feedback loop.
+
+\begin{lstlisting}
+bus.write("goal_torque", {"j1": 0.3})   # 0.3 N.m
+\end{lstlisting}
+
+\subsection{Recommended gains}
+
+\begin{center}\small
+\begin{tabular}{llll}
+\toprule
+Task & $K_p$ & $K_d$ & Notes \\
+\midrule
+Stiff position hold  & 80--150 & 2.0--4.0  & Heavy load; tune $K_d$ first \\
+Moderate hold        & 30--60  & 1.0--2.0  & General-purpose bench \\
+Impedance (teaching) & 3--10   & 0.3--0.6  & Back-drivable; recording demos \\
+Velocity tracking    & 0       & 1.0--3.0  & $K_p = 0$ mandatory \\
+Open-loop torque     & 0       & 0         & Keep $\le$1\,N$\cdot$m unloaded \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =========================================================================
+\section{Impedance control and kinesthetic teaching}
+\label{sec:impedance}
+% =========================================================================
+
+\subsection{Back-drivable operation}
+
+With low $K_p$ and $K_d$, setting $q_{\text{des}} = q_{\text{meas}}$
+each tick keeps the spring force zero:
+\[
+  \tau_{\text{spring}} = K_p\underbrace{(q_{\text{des}} - q)}_{=\,0} = 0
+\]
+Only the damping term $-K_d\dot{q}$ resists fast movements.
+Lower $K_d$ = softer feel; too low causes jitter from encoder noise.
+
+\subsection{Recording a demonstration (\texttt{05\_kinesthetic\_record.py})}
+
+\begin{lstlisting}
+KP, KD = 5.0, 0.4   # soft: compliant but not jittery
+with open_ak_v3_bench(set_zero=True) as bus:
+    while True:
+        q, dq, ia = bus.read_state(timeout=0.02)["j1"]
+        bus.write("goal_position", {"j1": q}, kp=KP, kd=KD)
+        rows.append((time.monotonic(), q, dq, ia))
+\end{lstlisting}
+
+Saves to \texttt{demo\_trajectory\_ak80.csv}:
+columns \texttt{t\_s, q\_rad, dq\_rad\_s, current\_a} at 100\,Hz.
+
+\subsection{Replaying a demonstration (\texttt{06\_replay\_trajectory.py})}
+
+Use higher gains during replay for tracking under load:
+\begin{lstlisting}
+bus.write("goal_position", {"j1": q_des[i]}, kp=30, kd=1.0)
+\end{lstlisting}
+
+\subsection{Spring-return impedance (\texttt{07\_impedance\_spring\_return.py})}
+
+Fixed anchor at $q = 0$; motor springs back when released:
+\begin{lstlisting}
+# 30-second loop at 100 Hz
+bus.write("goal_position", {"j1": 0.0}, kp=10, kd=0.5)
+\end{lstlisting}
+
+% =========================================================================
+\section{Test script inventory}
+\label{sec:tests}
+% =========================================================================
+
+\subsection{Complete list}
 
 \begin{center}\small
 \begin{tabular}{lp{9cm}}
 \toprule
 Script & Purpose \\
 \midrule
-\texttt{00\_loopback\_dsd\_tech.py}    & DSDTech USB adapter loopback (SW + physical) \\
-\texttt{00\_loopback\_socketcan.py}    & Jetson built-in CAN0 loopback (SW + physical) \\
-\texttt{00\_scan\_bitrate.py}          & Passive bitrate scan (find motor's actual rate) \\
-\texttt{00\_probe\_motor.py}           & Safe zero-torque CAN ping; confirms motor alive \\
-\texttt{00\_sniff\_motor.py}           & Passive V3.0 feedback sniffer; no TX (safest) \\
-\texttt{00\_read\_params.py}           & Read all motor parameters via UART serial (\texttt{COMM\_GET\_VALUES}) \\
-\texttt{01\_check\_connection.py}      & Poll 5 feedback frames, confirm non-zero \\
-\texttt{02\_mit\_position.py}          & MIT position hold, step through angles \\
-\texttt{03\_mit\_velocity.py}          & MIT velocity tracking \\
-\texttt{04\_mit\_torque.py}            & Open-loop torque ($\le$1\,N$\cdot$m unloaded) \\
-\texttt{05\_kinesthetic\_record.py}    & Hand-guide + save \texttt{demo\_trajectory\_ak80.csv} \\
-\texttt{06\_replay\_trajectory.py}     & Replay the recorded CSV \\
-\texttt{07\_impedance\_spring\_return.py} & Soft spring anchored at zero \\
+\texttt{00\_loopback\_dsd\_tech.py}       & DSDTech adapter loopback (software + physical) \\
+\texttt{00\_loopback\_socketcan.py}       & Jetson CAN0 loopback (software + physical) \\
+\texttt{00\_scan\_bitrate.py}             & Passive bitrate scan; confirm 1\,Mbps \\
+\texttt{00\_probe\_motor.py}              & Zero-torque CAN ping; verify ESC\_ID and latency \\
+\texttt{00\_sniff\_motor.py}              & Passive sniffer; decode feedback frames, no TX \\
+\texttt{00\_read\_params.py}              & UART serial parameter read (\texttt{COMM\_GET\_VALUES}) \\
+\texttt{01\_check\_connection.py}         & Poll 5 feedback frames; confirm non-zero \\
+\texttt{02\_mit\_position.py}             & MIT position hold; step through target angles \\
+\texttt{03\_mit\_velocity.py}             & MIT velocity tracking \\
+\texttt{04\_mit\_torque.py}               & Open-loop torque pulses ($\le 1$\,N$\cdot$m) \\
+\texttt{05\_kinesthetic\_record.py}       & Hand-guide + save \texttt{demo\_trajectory\_ak80.csv} \\
+\texttt{06\_replay\_trajectory.py}        & Replay recorded CSV \\
+\texttt{07\_impedance\_spring\_return.py} & Soft virtual spring anchored at zero \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\paragraph{Serial parameter read (\texttt{00\_read\_params.py}).}
-Uses the motor's 3-pin UART port (not CAN) at 921\,600\,baud.
-Requires a USB-to-UART adapter (FTDI/CH340 etc.) wired:
-GND\,$\leftrightarrow$\,GND, adapter\,TX\,$\to$\,motor\,RX,
-adapter\,RX\,$\to$\,motor\,TX.
-Sends \texttt{COMM\_GET\_VALUES} (0x45) and displays a table of all 17
-operating parameters; also demonstrates the selective
-\texttt{COMM\_GET\_VALUES\_SETUP} (0x10) bitmask query.
-Run as: \texttt{sudo python3 00\_read\_params.py [--port /dev/ttyUSB0]}.
+All scripts use \texttt{with open\_ak\_v3\_bench(...) as bus:} and
+run as \texttt{sudo python3}.
+
+\subsection{Probe and diagnostic scripts (\texttt{00\_*})}
+
+\paragraph{\texttt{00\_loopback\_dsd\_tech.py}}
+Software loopback (echo without motor) then physical loopback (CAN\,H
+shorted to CAN\,L).  Run first when the DSDTech adapter is new or
+suspected faulty.
+
+\paragraph{\texttt{00\_scan\_bitrate.py}}
+Passively listens on \texttt{can1} with no TX.  Confirms the motor
+broadcasts at 1\,Mbps and shows the feedback CAN ID (\texttt{0x2902}).
+
+\paragraph{\texttt{00\_probe\_motor.py}}
+Sends one zero-torque MIT frame and waits for the feedback reply.
+First-contact test before any control script.
+
+\paragraph{\texttt{00\_sniff\_motor.py}}
+Listen-only mode; decodes and prints every feedback frame without
+transmitting.  Safe to run while the motor is powered and moving.
+Verifies R-Link CAN Mode and ESC\_ID.
+
+\paragraph{\texttt{00\_read\_params.py}}
+Requires a separate USB-UART adapter on the motor's 3-pin UART terminal.
+Sends \texttt{COMM\_GET\_VALUES} (0x45) and parses the 73-byte reply;
+demonstrates \texttt{COMM\_GET\_VALUES\_SETUP} bitmask query.
+
+\subsection{\texttt{01\_check\_connection.py}}
+
+Polls five feedback frames and prints native units:
+
+\begin{lstlisting}
+with open_ak_v3_bench() as bus:
+    for i in range(5):
+        pos, erpm, ia, tc, err = bus.read_raw(timeout=0.2)["j1"]
+        print(f"pos={pos:+8.2f} deg  spd={erpm:+8.1f} ERPM  "
+              f"I={ia:+6.2f} A  T={tc:3d} C  err={err}")
+        time.sleep(0.2)
+\end{lstlisting}
+
+\subsection{\texttt{02\_mit\_position.py}}
+
+Steps through \texttt{TARGETS\_DEG = [0.0, 15.0, -15.0, 30.0, 0.0]},
+holding each for 1.5\,s at Kp=60, Kd=1.5:
+
+\begin{lstlisting}
+with open_ak_v3_bench(set_zero=True) as bus:
+    for tgt_deg in TARGETS_DEG:
+        tgt_rad = math.radians(tgt_deg)
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < HOLD_S:
+            bus.write("goal_position", {"j1": tgt_rad}, kp=60, kd=1.5)
+            q, dq, ia = bus.read_state(timeout=0.02)["j1"]
+\end{lstlisting}
+
+\subsection{\texttt{03\_mit\_velocity.py}}
+
+Commands velocity targets (rad/s) via MIT velocity mode
+($K_p = 0$, $K_d > 0$).  Prints actual vs target speed at 5\,Hz.
+
+\subsection{\texttt{04\_mit\_torque.py}}
+
+Short open-loop torque pulses ($\tau_{ff} \le 1$\,N$\cdot$m):
+\begin{lstlisting}
+bus.write("goal_torque", {"j1": 0.5})   # apply 0.5 N.m
+time.sleep(0.5)
+bus.write("goal_torque", {"j1": 0.0})   # release
+time.sleep(0.5)
+\end{lstlisting}
+
+\subsection{\texttt{05--07}}
+
+See Section~\ref{sec:impedance} for detailed descriptions and code.
+
+% =========================================================================
+\section{Calibration (R-Link, one time)}
+\label{sec:cal}
+% =========================================================================
+
+\begin{enumerate}
+  \item \textbf{Motor Identification} -- R-Link spins the motor to measure
+        resistance, inductance, and back-EMF.  Motor must be free to spin.
+  \item \textbf{Encoder Identification} -- samples encoder at many rotor
+        positions; builds correction table.  Run immediately after Motor ID.
+  \item \textbf{Write Parameters} -- click \emph{Write}.  Save
+        \texttt{.AppParams} and \texttt{.McParams} as backups.
+  \item \textbf{CAN settings} -- set CAN Bitrate = 1000\,kbps,
+        CAN ID = 2, CAN Mode = Periodic Feedback.
+\end{enumerate}
+
+Re-calibrate after swapping motor phase wires, replacing the motor, or
+flashing new firmware.
+
+\paragraph{Software zero (volatile):}
+\begin{lstlisting}
+with open_ak_v3_bench(set_zero=True) as bus: ...
+# or explicitly after connect:
+bus.set_zero()   # permanent=False by default (RAM only, resets on power)
+\end{lstlisting}
 
 % =========================================================================
 \section{Known issues and gotchas}
@@ -804,268 +754,46 @@ Run as: \texttt{sudo python3 00\_read\_params.py [--port /dev/ttyUSB0]}.
 
 \begin{enumerate}
 
-\item \textbf{[CURRENT ISSUE] Motor is in Servo Mode.}
-  The motor auto-broadcasts extended-CAN status frames at 50\,Hz
-  (CAN~ID \texttt{0x2968}, cmd \texttt{0x29}, motor ID \texttt{0x68} = 104).
-  \texttt{cubemars\_bus.py} speaks MIT only (standard CAN).  All
-  feedback is silently discarded; \texttt{read\_state()} returns zeros.
-  \textbf{Fix:} R-Link $\to$ CAN Mode = \textbf{Inquiry Feedback} $\to$ Write
-  $\to$ power-cycle.
-  feedback frame is 104 (\texttt{0x68}).  \texttt{motor\_config.py}
-  has been corrected to \texttt{can\_id=0x68}.
+\item \textbf{Never Kd\,=\,0 in position mode.}
+  $K_p > 0$, $K_d = 0$ removes all damping; motor oscillates or runs away.
+  Always set $K_d \ge 0.3$ with position commands.
 
-\item \textbf{Model is AK60-6 V3.0 KV80, not AK80-9.}
-  R-Link hardware/software version string \texttt{AK60\_6V} /
-  \texttt{AK60\_6\_SE\_V3} confirmed on 12~May~2026.  All MIT limits
-  updated to AK60-6 values:
-  \texttt{CUBEMARS\_LIMITS["AK60-6"] = [12.5, 45.0, 15.0]}.
+\item \textbf{ESC\_ID = 0x02.}
+  Wrong ESC\_ID causes \texttt{read\_state()} to return cached zeros
+  silently.  Verify with \texttt{00\_probe\_motor.py}; change via R-Link.
 
-\item \textbf{Never Kd = 0 in position mode.}
-  Same rule as Damiao MIT mode: $K_d = 0$ with $K_p > 0$ removes all
-  damping and causes oscillation or runaway.
+\item \textbf{can1 missing after reboot.}
+  Replug the DSDTech adapter (udev rule brings \texttt{can1} up), or:
+\begin{lstlisting}[numbers=none]
+sudo ip link set can1 up type can bitrate 1000000
+\end{lstlisting}
+
+\item \textbf{gs\_usb ``Unexpected unused echo id'' in dmesg.}
+\begin{lstlisting}[numbers=none]
+sudo rmmod gs_usb && sudo modprobe gs_usb
+\end{lstlisting}
+
+\item \textbf{read\_state() tau field is amps, not N$\cdot$m.}
+  Third element \texttt{ia} of \texttt{(q, dq, ia)} is $I_q$ in amps.
+  Multiply by $K_t \approx 0.12$\,N$\cdot$m/A for torque.
+
+\item \textbf{V3.0 ignores 11-bit standard CAN frames.}
+  The legacy \texttt{cubemars\_bus.py} silently fails on V3.0 firmware.
+  Use \texttt{ak\_v3\_can.py} / \texttt{AkV3Bench} exclusively.
 
 \item \textbf{Calibration required before first use.}
-  Run Motor Identification + Encoder Identification in R-Link with the
-  motor unloaded.  Write parameters.  Re-run if any phase wire is swapped.
-
-\item \textbf{No mode switch over CAN.}
-  The MIT / Servo mode switch is a flash-stored setting only changeable
-  via R-Link + power-cycle.  It cannot be commanded over CAN at runtime.
+  An uncalibrated motor may spin erratically.  Run R-Link Motor ID +
+  Encoder ID (Section~\ref{sec:cal}).
 
 \item \textbf{Peak current caution.}
-  The motor allows up to 30\,A peak.  When testing open-loop torque
-  (\texttt{04\_mit\_torque.py}), keep $\tau_{\text{ff}} \le 1$\,N$\cdot$m
-  when unloaded to avoid damaging a current-limited bench supply.
+  Motor allows up to 30\,A peak.  Keep $\tau_{ff} \le 1$\,N$\cdot$m when
+  unloaded (\texttt{04\_mit\_torque.py}).
+
+\item \textbf{00\_read\_params.py requires a USB-UART adapter.}
+  The DSDTech SH-C30A is a CAN-only adapter.  Use a separate FTDI/CH340
+  dongle wired to the motor's 3-pin UART terminal.
 
 \end{enumerate}
-
-% =========================================================================
-\section{TMotorCANControl reference library}
-\label{sec:tmotor}
-% =========================================================================
-
-The \texttt{TMotorCANControl/} directory contains the
-\href{https://github.com/neurobionics/TMotorCANControl}{neurobionics/TMotorCANControl}
-open-source library, included as a vendored reference.  It implements
-the same MIT CAN protocol for T-Motor / CubeMars actuators using
-\textbf{SocketCAN} (Linux \texttt{can0} interface via \texttt{python-can}).
-
-\subsection{How it differs from our driver}
-
-\begin{center}\small
-\begin{tabular}{lll}
-\toprule
-Aspect & \texttt{cubemars\_bus.py} (ours) & TMotorCANControl \\
-\midrule
-CAN interface & HDSC USB-to-CAN serial (\texttt{/dev/ttyACM0}) &
-               SocketCAN (\texttt{can0}, \texttt{slcan}, etc.) \\
-Dependency & \texttt{pyserial} only & \texttt{python-can}, SocketCAN kernel module \\
-Jetson setup & Plug-in USB adapter, no kernel config & Requires \texttt{ip link set can0 up} \\
-MIT protocol & Identical bit-packing & Identical bit-packing \\
-Servo mode  & Not supported & Supported via \texttt{servo\_can} class \\
-API style   & LeRobot-style \texttt{read}/\texttt{write} & Iterator / context manager \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsection{Using TMotorCANControl (reference, not our primary path)}
-
-If you want to switch to SocketCAN on the Jetson (for lower latency or
-multi-motor daisy-chaining without the HDSC adapter):
-
-\begin{lstlisting}[language=bash, numbers=none]
-# Bring up SocketCAN interface (HDSC adapter exposes slcan):
-sudo slcand -o -c -s8 /dev/ttyACM0 can0
-sudo ip link set can0 up type can bitrate 1000000
-
-# Then use TMotorCANControl:
-from TMotorCANControl.mit_can import TMotorManager_mit_can
-with TMotorManager_mit_can(motor_type="AK80-9", device="can0",
-                           motor_ID=104) as m:
-    m.set_zero_position()
-    m.update()
-    print(m.position, m.velocity, m.torque)
-\end{lstlisting}
-
-\textbf{Note:} the HDSC adapter firmware does not natively speak
-\texttt{slcan}, so the above may require the \texttt{slcan} TTY line
-discipline.  Our \texttt{cubemars\_bus.py} avoids this by writing the
-HDSC proprietary 30-byte envelope directly, which is more reliable on
-Jetson without kernel module setup.
-
-% =========================================================================
-\section{V3.0 driver-board protocol (\texttt{AK Series Manual V3.0.1})}
-\label{sec:v3-protocol}
-% =========================================================================
-
-The CubeMars \textbf{V3.0} driver board uses a unified extended-frame
-CAN protocol that supersedes the older Damiao-style standard-frame MIT
-protocol assumed by \texttt{cubemars\_bus.py} and by the
-\texttt{TMotorCANControl} library.  Both servo modes and force-control
-(MIT) mode share one identifier scheme.
-
-\subsection{Unified extended-ID layout}
-
-\begin{center}
-\texttt{CAN\_ID (29-bit)} \;=\; \texttt{(PACKET\_TYPE \(\ll\) 8) \;|\; ESC\_ID}
-\end{center}
-
-The packet type selects the control mode.  All eight packet types share
-the same 29-bit ID slot and the same 8-byte DLC.
-
-\begin{center}\small
-\begin{tabular}{rlll}
-\toprule
-\textbf{PACKET\_TYPE} & \textbf{Name} & \textbf{Section} &
-\textbf{CAN\_ID for ESC=0x68} \\
-\midrule
-0 & \texttt{SET\_DUTY}           & \S4.1.1 & \texttt{0x00000068} \\
-1 & \texttt{SET\_CURRENT}        & \S4.1.2 & \texttt{0x00000168} \\
-2 & \texttt{SET\_CURRENT\_BRAKE} & \S4.1.3 & \texttt{0x00000268} \\
-3 & \texttt{SET\_RPM}            & \S4.1.4 & \texttt{0x00000368} \\
-4 & \texttt{SET\_POS}            & \S4.1.5 & \texttt{0x00000468} \\
-5 & \texttt{SET\_ORIGIN\_HERE}   & \S4.1.6 & \texttt{0x00000568} \\
-6 & \texttt{SET\_POS\_SPD}       & \S4.1.7 & \texttt{0x00000668} \\
-8 & \texttt{SET\_MIT}            & \S4.2   & \texttt{0x00000868} \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsection{R-Link ``CAN Mode'' setting}
-
-This selects feedback delivery only -- \emph{not} which control modes
-the firmware accepts.  Both Servo and MIT commands work in either setting.
-
-\begin{center}\small
-\begin{tabular}{ll}
-\toprule
-\textbf{Inquiry Feedback}  & Motor replies with one feedback frame for each command received. \\
-\textbf{Periodic Feedback} & Motor broadcasts feedback at \texttt{CAN Fdb Rate} (default 50\,Hz). \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsection{Force-control (MIT) frame layout -- V3.0 byte order}
-
-The V3.0 MIT byte order is \textbf{Kp first}, which differs from the
-classic mini-cheetah layout (position first) used by Damiao and earlier
-T-Motor firmware:
-
-\begin{center}\small
-\begin{tabular}{cl}
-\toprule
-\textbf{Byte} & \textbf{Content} \\
-\midrule
-0 & \texttt{Kp[11:4]}                       \\
-1 & \texttt{Kp[3:0] | Kd[11:8]}             \\
-2 & \texttt{Kd[7:0]}                        \\
-3 & \texttt{pos[15:8]}                      \\
-4 & \texttt{pos[7:0]}                       \\
-5 & \texttt{vel[11:4]}                      \\
-6 & \texttt{vel[3:0] | tau[11:8]}           \\
-7 & \texttt{tau[7:0]}                       \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\paragraph{Sub-modes (selected by which fields are nonzero).}
-\begin{itemize}
-  \item \textbf{Position}: \(K_p > 0\), \(K_d > 0\), set \(p_{des}\).
-        Never \(K_d = 0\).
-  \item \textbf{Velocity}: \(K_p = 0\), \(K_d > 0\), set \(v_{des}\).
-  \item \textbf{Torque}  : \(K_p = 0\), \(K_d = 0\), set \(\tau_{ff}\).
-\end{itemize}
-
-\subsection{Parameter ranges (manual \S4.2 table)}
-
-\begin{center}\small
-\begin{tabular}{lcccccc}
-\toprule
-\textbf{Model} & \textbf{KV} &
-\(P_{\max}\) (rad) & \(V_{\max}\) (rad/s) & \(T_{\max}\) (N\,m) &
-\(K_p\) range & \(K_d\) range \\
-\midrule
-AK10-9   & 60  & 12.56 & 28  & 54  & 0--500 & 0--5 \\
-\textbf{AK60-6}   & \textbf{80}  & \textbf{12.56} & \textbf{60}  & \textbf{12}  & 0--500 & 0--5 \\
-AK70-9   & 60  & 12.56 & 30  & 32  & 0--500 & 0--5 \\
-AK80-9   & 100 & 12.56 & 65  & 18  & 0--500 & 0--5 \\
-AKE60-8  & 80  & 12.56 & 40  & 15  & 0--500 & 0--5 \\
-AKE80-8  & 30  & 12.56 & 20  & 35  & 0--500 & 0--5 \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\textbf{For the bench AK60-6 V3.0 KV80}: \(V_{\max} = 60\) rad/s,
-\(T_{\max} = 12\) N\,m.  Note these differ from the values hard-coded
-in TMotorCANControl (\(V_{\max} = 50\), \(T_{\max} = 15\)) and the
-older Damiao-style assumption (\(V_{\max} = 45\), \(T_{\max} = 15\)).
-
-\subsection{Feedback frame (extended ID \texttt{0x2968} for ESC=0x68)}
-
-\begin{center}\small
-\begin{tabular}{cll}
-\toprule
-\textbf{Bytes} & \textbf{Type} & \textbf{Meaning} \\
-\midrule
-0--1 & \texttt{int16\_t}  & position (\(\times 0.1\) deg)         \\
-2--3 & \texttt{int16\_t}  & speed (\(\times 10\) ERPM)            \\
-4--5 & \texttt{int16\_t}  & current (\(\times 0.01\) A)           \\
-6    & \texttt{int8\_t}   & driver-board temperature (\(^\circ\)C)\\
-7    & \texttt{uint8\_t}  & error code (0 = no fault)             \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\subsection{Worked example -- send MIT torque 1\,N\,m, ESC\_ID = 104}
-
-Using the V3.0 layout, with \(K_p = K_d = 0\), \(p_{des} = v_{des} = 0\),
-\(\tau_{ff} = 1\) N\,m for an AK60-6 (\(T_{\max}=12\)):
-
-\begin{align*}
-t_{int} &= \mathrm{float\_to\_uint}(1.0,\, -12,\, 12,\, 12) = 2218 \\
-p_{int} &= 32767  \quad\text{(centre of 16-bit unsigned, $p=0$)} \\
-v_{int} &= 2047   \quad\text{(centre of 12-bit unsigned, $v=0$)} \\
-kp_{int} &= 0,\; kd_{int} = 0
-\end{align*}
-
-Resulting 8-byte payload: \texttt{00 00 00 7F FF 7F F8 AA}, sent at
-extended CAN ID \texttt{0x00000868} (i.e.\ \texttt{(8 \(\ll\) 8) | 104}).
-
-\subsection{Python driver: \texttt{src/ak\_v3\_can.py}}
-
-A Python port of the official \texttt{AK-V3.ino} sketch is shipped at
-\texttt{src/ak\_v3\_can.py}.  It uses \texttt{python-can} on top of the
-Linux SocketCAN interface (\texttt{can0}), which is exposed by the
-Waveshare / Canable USB-CAN adapter via the in-kernel \texttt{gs\_usb}
-driver.  Quick usage:
-
-\begin{lstlisting}[language=Python]
-from ak_v3_can import AkV3Motor, ensure_can0_up
-import can
-
-ensure_can0_up(1_000_000)
-bus = can.interface.Bus(channel="can0", bustype="socketcan")
-motor = AkV3Motor(bus, can_id=104, model="AK60-6")   # 104 = 0x68
-
-# Position mode: hold 90 deg with moderate stiffness.
-motor.set_mit(p_des=1.57, v_des=0.0, kp=30.0, kd=1.0, t_ff=0.0)
-
-while True:
-    if motor.poll_feedback(timeout=0.05):
-        print(motor.pos_deg, motor.spd_erpm, motor.current_a)
-\end{lstlisting}
-
-\subsection{Compatibility note}
-
-The bench-tested HDSC + \texttt{cubemars\_bus.py} stack (standard
-11-bit CAN ID, classic position-first MIT byte order) is \emph{not}
-the protocol the V3.0 manual describes.  Either:
-\begin{itemize}
-  \item the bench firmware predates the V3.0.1 manual revision and
-        still accepts the legacy MIT format on standard frames; or
-  \item it accepts both formats in parallel.
-\end{itemize}
-For new code on a fresh V3.0 board, prefer \texttt{ak\_v3\_can.py}.
 
 % =========================================================================
 \section{Quick-start checklist}
@@ -1073,26 +801,29 @@ For new code on a fresh V3.0 board, prefer \texttt{ak\_v3\_can.py}.
 % =========================================================================
 
 \begin{enumerate}
-  \item Power on motor (18--52\,V; bench uses 48\,V).
-  \item Connect HDSC USB-to-CAN adapter to Jetson USB port.
-  \item Verify \texttt{ls /dev/ttyACM0} exists.
-  \item \textbf{Ensure motor is in MIT mode} (R-Link $\to$ CAN Mode = MIT,
-        Write, power-cycle).
-  \item Run scan to confirm CAN ID:
+  \item Power on motor (18--52\,V).
+  \item Plug DSDTech SH-C30A into Jetson USB.  Confirm:
 \begin{lstlisting}[numbers=none]
-conda activate actuators
-cd tests/cubemars
-python 00_scan_can_id.py
+ip -details link show can1
 \end{lstlisting}
-  \item Expected: one MIT feedback frame at \texttt{0x68} (104) with valid
-        \texttt{q, dq, tau}.
-  \item If scan shows extended-ID \texttt{0x2968}: motor is still in Servo
-        Mode.  Return to step~4.
-  \item Run connection check:
+  \item Passive sniff -- confirm motor broadcasting:
 \begin{lstlisting}[numbers=none]
-python 01_check_connection.py
+sudo python3 tests/cubemars/00_sniff_motor.py
 \end{lstlisting}
-  \item Proceed with higher test scripts (\texttt{02}--\texttt{07}).
+  Expected: frames with CAN ID \texttt{0x2902} at 50\,Hz.
+  \item Probe motor -- verify ESC\_ID and round-trip:
+\begin{lstlisting}[numbers=none]
+sudo python3 tests/cubemars/00_probe_motor.py
+\end{lstlisting}
+  \item Connection check -- 5 frames, non-zero values:
+\begin{lstlisting}[numbers=none]
+sudo python3 tests/cubemars/01_check_connection.py
+\end{lstlisting}
+  \item MIT position sweep:
+\begin{lstlisting}[numbers=none]
+sudo python3 tests/cubemars/02_mit_position.py
+\end{lstlisting}
+  \item Proceed with scripts \texttt{03}--\texttt{07} as needed.
 \end{enumerate}
 
 \end{document}

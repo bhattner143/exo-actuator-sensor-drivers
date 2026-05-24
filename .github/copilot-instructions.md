@@ -1,6 +1,10 @@
 # Copilot instructions -- exo-actuator-sensor-drivers workspace
 
-This repo contains Python drivers and test scripts for hardware on a Jetson Orin Nano bench:
+This repo contains Python drivers and test scripts for hardware on a Jetson Orin Nano bench
+**integrated with the PyDrake + Isaac Sim exosuit & manipulation framework**
+(see parent [Isaac_sim_robotics](../../../) repo).
+
+## Hardware
 
 1. **Damiao DM-J4310-2EC V1.1** -- geared servo motor (24 V, CAN @ 1 Mbps,
    UART debug @ 921600 bps, 10:1 gearbox, ESC_ID=0x01).
@@ -11,8 +15,29 @@ This repo contains Python drivers and test scripts for hardware on a Jetson Orin
 4. **AS5048A** -- 14-bit absolute magnetic encoder (SPI mode 1, up to 10 MHz,
    Jetson SPI0 via device-tree overlay).
 
-Use these notes when reasoning about, editing, or generating code in this
-workspace.
+## Framework Integration
+
+Use these notes when reasoning about, editing, or generating code in this workspace.
+For actuator identification, hardware-to-sim methodology, and exosuit tuning, see:
+
+- **Hardware-to-Sim Methodology**: `docs/notes/skyntefic_hardware_to_sim_methodology.tex`
+  - Sharp pulse command identification (motor inertia & damping estimation)
+  - Sinusoidal frequency-response tests (encoder-trace fitting to 2nd-order model)
+  - Encoder comparison: hardware traces vs PyDrake simulation
+  
+- **SEA Tuning**: `Isaac_sim_robotics/.github/skills/sea-tuning/SKILL.md`
+  - Cable-driven series elastic actuator spring stiffness & damping selection
+  - Motor bandwidth tuning for tracking lag reduction
+  
+- **Exosuit Cable Routing**: `Isaac_sim_robotics/.github/instructions/exosuit-cables.instructions.md`
+  - Dual-groove pulley antagonistic co-contraction design
+  - Method A (offset pulleys) vs Method B (centred elbow pulley)
+  - Effective stiffness: $K_{\mathrm{eff}} = 2\,k_{\mathrm{exo}}\,r_{\mathrm{exo}}^2$
+
+- **Kinesthetic Teaching & Impedance Control**: `docs/notes/trajectory_control_cubemars.tex`
+  - Low-impedance demos (Kp=0–10, Kd=0.3–0.8) for hand guiding
+  - Trajectory recording & replay framework
+  - Perturbation response measurement protocols
 
 ## Project layout
 ### Python source (`src/`)
@@ -446,3 +471,92 @@ warnings on lines 833–836 are non-fatal; PDF is still produced correctly.
 2. **CubeMars:** Quote `docs/notes/cubemars_notes.tex` PDF tables. Covers both V3.0 and V1.x.
 3. **Encoder:** Quote `docs/notes/as5048a_notes.tex` for SPI protocol and parity checks.
 4. **Always check the authoritative `.tex` PDF before answering protocol/bit-packing questions** — don't guess.
+
+---
+
+# Hardware Experiment Protocols & Actuator Identification
+
+## Kinesthetic Teaching (Impedance Control)
+From `tests/damiao/08_kinesthetic_record.py` and `tests/cubemars/05_kinesthetic_record.py`:
+
+```
+Low impedance parameters (hand-guiding):
+  Kp = 0–10 N⋅m/rad
+  Kd = 0.3–0.8 N⋅m⋅s/rad
+  q_des = q_meas (zero spring force)
+  
+Recording: (t, q, dq, τ) at 100 Hz → demo_trajectory.csv
+Replay: higher Kp (30–80) to achieve trajectory tracking
+```
+
+**Use case:** imitation learning, demonstration capture for later RL training.
+
+## Actuator Identification: Sharp Pulse + Sinusoidal Frequency Response
+
+From `docs/notes/skyntefic_hardware_to_sim_methodology.tex`:
+
+1. **Sharp pulse (impulse):** Apply brief step command (10–50 ms), record encoder response
+   - Fit second-order underdamped model: $\omega_n$, $\zeta$, $\tau$ (delay)
+   - Extract: motor inertia $J_m$, damping ratio $\zeta_m$, mechanical lag
+
+2. **Sinusoidal sweep:** 0.1 Hz → 20 Hz, constant amplitude, record amplitude & phase lag
+   - Compare encoder phase vs command: extracts frequency-dependent bandwidth limits
+   - Fitting equation: $\phi(\omega) = -\arctan\left(\frac{2\zeta\omega_n\,\omega}{\omega_n^2 - \omega^2}\right) - \tau\,\omega$
+
+3. **Cross-validation:** PyDrake simulation with identified $(J_m, \zeta_m)$ vs hardware traces
+   - Adjust until PyDrake/hardware tracking errors match within 5%
+
+**Typical fixtures:**
+- Clamped joint (free-swinging, no load): motor inertia dominant
+- Light mass load (50–200 g): adds virtual inertia to shaft
+- Friction estimation: constant torque plateau in low-speed trials
+
+## SEA Cable Dynamics Tuning
+
+From `Isaac_sim_robotics/.github/skills/sea-tuning/SKILL.md`:
+
+For cable-driven SEA (elbow joint):
+- Spring stiffness $k_s$ ∈ [10, 100] N/m (softer = less tracking error, more settling time)
+- Cable damping $b_c$ ∈ [1, 20] N⋅s/m (heavier damping reduces oscillation)
+- Motor bandwidth mismatch → cable resonance → instability
+
+**Tuning workflow:**
+1. Start: $k_s = 30$ N/m, $b_c = 8$ N⋅s/m (default)
+2. Measure: step response, frequency response, disturbance attenuation
+3. If overshoot > 10%, increase $b_c$; if lag > 100 ms, decrease $k_s$
+
+## Hardware-to-Sim Validation Loop
+
+Integrate hardware measurements into the parent `Isaac_sim_robotics/` repo:
+
+1. Record hardware traces: encoder + motor current/torque
+2. Generate PyDrake plant model with identified inertia/damping parameters
+3. Run identical trajectory in simulation with same controller gains
+4. Compare end-effector error, joint accelerations, power consumption
+5. If mismatch > 15%: re-identify or adjust friction model
+
+**Output:** validated URDF + physics params for Onshape → simulation pipeline.
+
+---
+
+# docs/notes Maintenance Rules (Hardware Framework)
+
+After changes to **any hardware drivers or test scripts**, update and recompile:
+
+- `docs/notes/dm_j4310_notes.tex` (Damiao) — after changes to `src/damiao/` or `tests/damiao/`
+- `docs/notes/cubemars_notes.tex` (CubeMars) — after changes to `src/cubemars/` or `tests/cubemars*/`
+- `docs/notes/as5048a_notes.tex` (Encoder) — after changes to `src/as5048a.py` or `tests/encoder/`
+- **New:** `docs/notes/skyntefic_hardware_to_sim_methodology.tex` — actuator ID methodology & results
+- **New:** `docs/notes/trajectory_control_cubemars.tex` — kinesthetic teaching protocols & CSV formats
+
+All `.tex` files must compile cleanly (run pdflatex twice from `docs/notes/`):
+
+```bash
+cd docs/notes
+pdflatex -interaction=nonstopmode <filename>.tex
+pdflatex -interaction=nonstopmode <filename>.tex
+```
+
+This repo is **not a standalone project** — it is a driver/hardware interface library
+supporting the broader [Isaac_sim_robotics](../../../) dual-simulator framework for exosuit
+trajectory control, cable-driven SEA, and parameter identification.

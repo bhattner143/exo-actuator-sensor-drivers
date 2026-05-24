@@ -105,12 +105,43 @@ udevadm info /dev/ttyACM0 | grep -E "ID_VENDOR|ID_MODEL|ID_SERIAL"
 
 ---
 
+---
+
+## Actuator Identification Framework
+
+This repo integrates with the **PyDrake + Isaac Sim** dual-simulator framework (see parent `Isaac_sim_robotics/` repo) for:
+
+1. **Hardware-to-Sim Methodology** (`docs/notes/skyntefic_hardware_to_sim_methodology.tex`):
+   - Pulse identification: sharp command response to identify motor inertia & damping
+   - Sinusoidal frequency-response tests: encoder-trace fitting to second-order plant model
+   - Cross-validation: PyDrake simulation vs. measured hardware traces
+
+2. **Cable-Driven SEA Tuning** (see `Isaac_sim_robotics/.github/skills/sea-tuning/SKILL.md`):
+   - Spring stiffness tuning for cable-driven joints
+   - Damping coefficient selection for tracking performance
+   - Motor bandwidth matching to cable resonance
+
+3. **Exosuit Co-Contraction & Cable Routing** (see `Isaac_sim_robotics/.github/instructions/exosuit-cables.instructions.md`):
+   - Dual-groove pulley geometry for antagonistic exo motors
+   - Effective stiffness calculation: $K_{\mathrm{eff}} = 2\,k_{\mathrm{exo}}\,r_{\mathrm{exo}}^2$
+   - Method A (offset pulleys) vs Method B (centred elbow pulley) implementations
+
+4. **Hardware Experiment Protocols** (see parent `Isaac_sim_robotics/notes_all/` for meeting notes):
+   - Kinesthetic teaching with impedance control (low Kp/Kd for back-drivability)
+   - Perturbation-response measurements for parameter identification
+   - Trajectory recording & replay from encoder traces
+
+---
+
 ## Reference documentation
 
-| Document | Location |
-|---|---|
-| Damiao protocol notes & audit | `docs/notes/dm_j4310_notes.pdf` |
-| AS5048A encoder notes & audit | `docs/notes/as5048a_notes.pdf` |
-| Damiao DM-J4310 datasheet | `docs/datasheets/damaio/DM-J4310-en.pdf` |
-| CubeMars AK-series datasheet | `docs/datasheets/cubemars/CubeMars-AK-Series.pdf` |
-| AS5048A datasheet | `docs/datasheets/encoder/Encoder-AS5048_DS000298_4-00.pdf` |
+| Document | Location | Purpose |
+|---|---|---|
+| Damiao protocol notes & audit | `docs/notes/dm_j4310_notes.tex` → PDF | Motor control protocol & firmware audit |
+| CubeMars notes & audit | `docs/notes/cubemars_notes.tex` → PDF | AK60-6 V3.0 & AK80-8 V1.x protocol audit |
+| AS5048A encoder notes & audit | `docs/notes/as5048a_notes.tex` → PDF | SPI encoder protocol & parity check |
+| Hardware-to-Sim Methodology | `docs/notes/skyntefic_hardware_to_sim_methodology.tex` → PDF | Actuator ID via sharp/sine tests, encoder fitting |
+| Trajectory Control (CubeMars) | `docs/notes/trajectory_control_cubemars.tex` → PDF | Kinesthetic teaching & replay framework |
+| Damiao DM-J4310 datasheet | `docs/datasheets/damaio/DM-J4310-en.pdf` | Motor specs & firmware parameters |
+| CubeMars AK-series datasheet | `docs/datasheets/cubemars/CubeMars-AK-Series.pdf` | Extended & standard CAN protocols |
+| AS5048A datasheet | `docs/datasheets/encoder/Encoder-AS5048_DS000298_4-00.pdf` | 14-bit absolute encoder specs |

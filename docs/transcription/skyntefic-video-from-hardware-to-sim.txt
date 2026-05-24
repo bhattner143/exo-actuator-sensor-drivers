@@ -1,0 +1,137 @@
+00:00:00-00:00:34 
+ Hello and welcome to my channel. Today we will try to make this bipedal robot work. In the previous video, we use the Isaac Sim in order to control the robot arm. Like this, we learned how to use this Isaac SIM. Afterwards, uh we learned to use the ISA club and this Isaac Club works with the Isaac Sim. And inside the Isaac Club simulation, we made uh the simulated robot to walk. Afterwards, when the simulation robot was working, we made the hardware robot
+
+00:00:32-00:01:04 
+ and today we will try to match the simulated robot with a real robot in order to make the real robot to work physically in reality, not just in simulation. So, let's get started. I have made this introduction 7 months ago. I was naive enough to think that the robot will start to work in one or two weeks. But in reality, it took me seven months of active work on this robot. And I think I encountered all
+
+00:01:02-00:01:35 
+ possible problems which I could have with it. Of course, the seven months was not like a full-time 7 months because I was busy with my main job. But still I was working really actively on the robot almost every evenings and every weekends and I think I've learned really a lot and in my opinion next time when I would need to train another robot I think I will be able to do it way way faster. So I hope this video also will be helpful for your robot or it will help you if
+
+00:01:33-00:02:07 
+ you want to understand a little bit more in details what kind of problems you can encounter when you're building such kind of robot. By the way, as you can see, the robot looks a little bit different than in the introduction, and we will talk why afterwards. For this video, I used a lot of Nvidia technologies like Isaac Club simulation, graphics card for training and Jetson for inference. So, I was really happy when Nvidia proposed to support this video. And now is one of the best time
+
+00:02:05-00:02:40 
+ for this video as GTC conference is around the corner from March 16th to 19th. NVIDIA GTC is the best global AI conference where developers, researchers, robot builders come together to explore the next wave of AI. From physical AI to aentic and inference, GCC 2026 will showcase the breakthroughs shaping every industry. Virtual GTC is free. Join me for virtual GTC conference with the link from the description of this video and win one of
+
+00:02:36-00:03:10 
+ the three Jetson Orin Nana super. These are the top three sessions which I'm going to attend. The first GTC keynote, the second first build physical intelligence, open collaboration across robotic ecosystems, European robotics startup showcase and the third one discover top in demand learning path across Europe, the Middle East and Africa. On this conference, you can find the interesting sessions for every technical level like for the beginners
+
+00:03:07-00:03:42 
+ or for the intermediate. If you want there are many many other interesting robotics and not only robotics related talks. If you want to know the robotics in the eye join this conference with my link from the description. The first thing which we should do is to make a precise model of the robot in the simulation and for this we need a precise URDF file. This file should contain the masses of all the parts of the robot, the center of mass of each part of the robot and also the inertia
+
+00:03:40-00:04:15 
+ matrices for each part of the robot. It's quite tedious work to obtain all these values, but you can do it with the cut design of your robot and with all properly set masses, densities, etc. Let me briefly show you how we can do this. I've started with original cut file of my robot. This cut file I simplified in order to create the measures for the URDF file and afterwards for these measures I need to calculate the exact masses, center of masses and moment of
+
+00:04:12-00:04:46 
+ inertia for each of these parts. So for this I created another file over here and in this file I combined all the parts which are related to the base to the same component base and afterwards I looked at each part individually. For example, if we take this one, I looked at each part individually and for each part I created its own material and for each this material I changed the density
+
+00:04:43-00:05:18 
+ in order to have the mass of the of the part exactly as the mass of the real part. So basically I 3D printed all these parts and I weighted them one by one and if the parts has some screws I weighted it with the screws. If the parts has some other components, electronic components, I also took into account all the components. So like this for each part I have its own material which gives me the perfect mass. And thanks to this the base itself with all
+
+00:05:16-00:05:51 
+ these components, the base itself has the same mass as the mass of the real base. And so over here I can check the properties and in the properties I can find the exact mass of the entire base. I can find the exact position of the center of mass and I can find the moment of inertia at the center of mass and these values I used in the UDF file. So like this my URDF file should be quite precise. Also I should say that for the
+
+00:05:48-00:06:23 
+ actuators what I did I separated actuator the actuator itself from its rotor and like this I put the rotor on the one part the actuator on another part. So all this in order to make everything as precise as possible. This was quite complicated work because there are a lot of components and all components should be included and should be accounted. For example, I even accounted the capacitors which were connected to each actuator. I also accounted the wires which goes from
+
+00:06:20-00:06:54 
+ actuator to the actuator. So everything was accounted and thanks to this I'm quite confident in the values which I put in my URDF file. The next thing which we need to do is to match the simulated actuator with the real actuator. This means that we take the real actuator and the model of the actuator inside the simulation and we need to tune the parameters of this simulated actuator in order to match with real actuator. And my real
+
+00:06:51-00:07:25 
+ actuator, they work with acceleration. And here's why. This is with acceleration. This is without acceleration. I think you can hear the clear difference. The first thing which I did, I implemented the acceleration in the
+
+00:07:22-00:07:58 
+ actuator model inside as a club simulation. And after this I took the real robot and I moved the actuator by octuator. I moved with the sharp command and also I moved with the cenosidal command. And I did the same in the simulation. I moved actuator by actuator and afterwards I tuned the parameters inside the simulation in order to match the simulated actuator with the real actuators. So here you can see the uh
+
+00:07:54-00:08:27 
+ encoder data from each actuator uh when they move and there is encoder data from the real actuator and from the simulated actuator. As you can see this real and simulator actuators they quite close one to another. Now with the prop actuator model and URDF file we can train our robot in the NVIDIA is club simulator. And the next step is to use the trained policy on a real robot. And here I found
+
+00:08:24-00:08:59 
+ the first major problem. Let's look at the inputs of the standard policy for working robots. These inputs are called observations. And in our real robot, we need to have these observations in order to put these inputs in our policy. These are the observations which we need. Let's look from the bottom. The last one is last action. So the previous output of our policy. Afterwards we need joint position and joint velocity. This we can easily get from the encoders of our
+
+00:08:56-00:09:32 
+ actuators. Velocity comments. This is basically the comments which tells robot to which direction with which velocity it should go. So basically this is the values from our joystick. Projected gravity. This is from the IMU. And over here the main problem base linear velocity and base angular velocity. Base angular velocity we can get from the IMU. Base linear velocity is quite complicated to get. And in order to get the base linear velocity we need to use
+
+00:09:30-00:10:06 
+ state estimator. And this is the first problem because before I was not really realizing that the state estimator is a huge problem. Here's a paper which explains how to get this state estimator, how to implement this state estimator. So this is introduction and after this there is a huge complicated mathematics with a lot a lot a lot of formulas. Basically I figured it out that the state estimator is not something which you can get easily. And so here this was
+
+00:10:02-00:10:36 
+ my first huge problem. How to get the linear base velocity without state estimator because implementing state estimator looks like nightmare. My first idea was can I try to train another policy without linear velocity. I even tried different neural net configurations. So I tried the classical neural net and I also tried LSTM still does not work properly. At least I was not able to get it work properly and I
+
+00:10:34-00:11:08 
+ found the solution with a slum camera. This is basically a small camera like this one which can calculate its position, its orientation, its velocity in a space using the data from two cameras. So basically this camera outputs the position, the angular velocity, the linear velocity and the orientation. So basically I'm cheating. Instead of implementing this state estimator, I decided that I will start with something simple like this slum
+
+00:11:05-00:11:38 
+ camera. Also I had a huge problems with this camera because this is absolute camera and it was difficult to find the proper drivers. I finally managed but it was challenging. So I started to code the real physical robot and almost immediately I spotted a quite big problem. Tim timing. The trained neural net policy should run at 50 hertz. This means that the robot should be able to read all the data from the sensors and send comments to the motors in less than 20 milliseconds. To read the data from
+
+00:11:36-00:12:12 
+ slam camera and IMU takes only couple of milliseconds. So this is not a problem. But what takes a lot of time is reading the encoder data from the actuators and sending the comments to 10 actuators. And this is slow mostly because I use USB to canvas adapters which are not really fast and not really suitable for the bipedal robot. So I figured it out that I basically have uh two possible solutions. One is to use the Raspberry Pi with a special canvas head which use
+
+00:12:08-00:12:42 
+ SPI connector of the Raspberry Pi and like this it's quite fast or the second solution is to use Jetson or Nana super with a special p.2 canvas adapter. So I compared these two solutions and I figured out that in terms of the time which needed to read the encoder data and send the comments they are quite close one to another. But the big difference which I saw was in the neural net and realtime capabilities. So first of all the train
+
+00:12:39-00:13:13 
+ policy was way faster on the Jetson but it still was not bad on the Raspberry Pi. But where was the huge difference is that the Raspberry Pi was not really consistent. Some of the loop for reading the data and sending the comment was taking couple of milliseconds and sometimes it was taking more than 100 milliseconds. So this was uh really random and the Jetson because this is a computer for the age device everything is already optimized all the loops of
+
+00:13:11-00:13:43 
+ the reading the data sending the data was always the same as far as I know it's possible to configure the Raspberry Pi in order to make these loops for reading the data and sending the data are more consistent but it requires some additional configurations which is not obvious for me how to do this. So I concluded that for me the cleanest, the easiest and best way is to go with the Jetson or Nana Super with a P M.2 canvas
+
+00:13:41-00:14:17 
+ adapter. I should say that I'm really happy that my viewers can win one of this Jetson or Nana Super. And by the way, how to win it, you can read in the description to this video. And the good thing is that on this module you can run a lot of open-source models. Actually, you can run a lot of open source models on different Jetsons. Let me show you. These are some of the example of open source model made by Nvidia for Jetson. Me personally, I mostly interesting in the Groot which I plan to use uh I think
+
+00:14:14-00:14:50 
+ in June somewhere in June. Also the Cosmos physical AI and all these models are open source. This is the most interesting. This is a simple slide which shows how Isaac Groot works. So it takes the sensor data it takes some uh text tokens and it convert it in the actions which are executed by the robot and look even with the JSON orin nana super you can run the models like cosmos reason quen and also jamma also you can
+
+00:14:47-00:15:21 
+ build your own digital assistant for example using the open claw on jetson and there is a good tutorial on the jetson ai up. Another thing which I'm really exciting about is there is another tutorial over here where you can deploy open-source vision language model on Jetson and the most funny thing that you can even use Jetson or Nana super there is like stepbystep guide how to do it. So in my opinion this model is super
+
+00:15:18-00:15:54 
+ interesting to play with. Now with a new canvas communication I was ready to go deep in the coding of the real physical robot. This is a Python code which I wrote for the physical robot. And the most interesting part that this code is using this reading and it uses three separate threads in order to improve the timing. The first thread reads the position from the joystick. The second thread reads the position from the IMU and slam camera and the third thread it
+
+00:15:51-00:16:24 
+ runs neural net and also sends the comment to the motors. So at the beginning there are some preparations uh and somewhere here there is a gamepad thread. So which basically sends three joysticks uh for the x velocity, y velocity and your velocity. after there is a what I called IMU state thread but uh it's not just IMU it's also the camera and so it takes the data from the IMU and somewhere here it takes the data
+
+00:16:22-00:16:55 
+ also from the camera and afterwards the sort thread is the motor common thread so here there is a while loop and inside this while loop we read the data from the encoders from the actuators we assemble all the observations And we send this observations into the neural net. And the output from this neural net we send to the 10 actuators. And that's it. As you can see, it's 800 lines. This is a lot for me. And the
+
+00:16:53-00:17:26 
+ biggest problem in this code is over here. Let me explain you why. I thought that the first test would be extremely boring. So I have not bothered to film it. But I filmed just after this first test. I just was testing the robot. And the robot performed a rapid unscheduled disassembly. So as you can see the leg is broken over here. I don't know how much damage there is as the second leg is also
+
+00:17:24-00:17:58 
+ almost broken. I don't know if this wire is damaged. Yeah, this was violent. Just some uh super fast motions. I was not able to stop it. Just some fast motions and it's done. The legs are broken. I'm really shaking a little bit because of the Yeah, I was really surprised. It took one week, but I have repaired the legs. So now the yellow. And why the yellow? Because I used the tough PLA plastic. I
+
+00:17:56-00:18:28 
+ hope that it's uh going to hold better. And this is the parts which I replaced. So these parts are the parts which were heavily damaged. These parts were slightly damaged and these parts were almost uh with no damage with a minor damage, nonstructural damage like over here. Later I figured out that IMU data along the Z-axis was inverted. So the robot thought that he's upside down. That's why it made this violent motion
+
+00:18:26-00:19:00 
+ which broke both legs in less than half a second. In order to prevent the rapid unscheduled disassembly next time I've decided that during the test I should run the robot at 10% of power and only for a short amount of time. Basically this means that over here I should put 10% like this I use only 10% of the output of neural policy and instead of while loop I should use for loop with some small number of cycles like here
+
+00:18:57-00:19:31 
+ and afterwards if everything seems safe I can increase the power and also the number of cycles and so all other tests I continue it like this and the idea when everything is going to work fine. I will come back to the while loop after this. I made some tests on real robot and the real robot was not really behaving like the robot in simulation. >> So I have decided that probably I have a problem with the batteries as these batteries have the safety feature which
+
+00:19:29-00:19:58 
+ cuts down the power if the current is too high. I have decided to put more powerful batteries just to be safe and later I also added voltmeters to monitor the batteries charge. The later tests were way more promising but still not good enough. I started to suspect that I have some kind of latency either in the AMU data or in the camera data.
+
+00:20:02-00:20:33 
+ So I built a test rig with a motor where I fixed either camera or IMU. I was able to compare the IMU or the camera orientation data with the encoder data. Like this I figured out that I have more than 100 millisecond delay on IMU data. All because this IMU is quite sophisticated and I forgot to clear buffer before each reading. At the same time, I was also improving the ISA club simulation.
+
+00:20:33-00:21:08 
+ When I solved the IMU latency problem, the tests become even more promising. But still, each time the robot tried to do the side step or rotation, it fall. And after I spent a lot of time trying to find the problem and the problem was in the camera reference frame. Apparently this camera gives the data in the world reference frame not in the camera local reference frame
+
+00:21:06-00:21:33 
+ to find and debug. This took me almost two months but this improved the robot behavior a lot. I also improved a lot the ISA club simulation, but I will talk about this more in details in the next video which will be dedicated to the more specific technical details of the bipedal robot. And finally, after almost one year of development, I've got this
+
+00:21:40-00:22:13 
+ forward, backward. Start. All right.
+
+00:23:08-00:23:42 
+ This was the most challenging project on my channel and I'm still thinking that this project is not yet completely finished. I would like to make some more improvements in this robot and one of the improvements is implementing state estimator the proper state estimator. Also as I told you before I will make uh another video where I will explain all the problems which I had more in details and also in this video I will put more attention into the Isaac club simulation because there are a lot of scenes there
+
+00:23:40-00:24:14 
+ and I thought that if I will put all these things in this video this video will be huge and probably not very interesting for all of my viewers. Also don't forget to register for the GTC conference. This is a really great opportunity in order to learn more about modern robotics and how to program this modern robotics, how to use Isaac Club, Isaac Sim, Groot, etc. Also participate in the raffle in order to win Jetson orin Nana super the same board which is
+
+00:24:12-00:24:42 
+ used in this robot. I think this video really deserve your like because as far as I know this information is not available anywhere else on YouTube. This is a real cutting edge robotics. Thank you for watching this video till the end. Huge thank you to people who support me via Patreon and via YouTube channel membership. Here are their names. Thank you. You are the best. As usual, stay safe. Good luck with your projects and see you next time.
+
+00:24:43-00:24:47 
+ Let's try working on this side.

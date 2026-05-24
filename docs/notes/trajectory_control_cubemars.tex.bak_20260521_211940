@@ -1,0 +1,881 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{positioning,arrows.meta,calc,shapes.geometric,decorations.pathreplacing}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  commentstyle=\color{gray}\itshape,
+  stringstyle=\color{orange!70!black},
+  numbers=left, numberstyle=\tiny\color{gray},
+  frame=single, breaklines=true, columns=fullflexible,
+  showstringspaces=false, language=Python,
+}
+
+% Convenience macros
+\newcommand{\vq}{\mathbf{q}}
+\newcommand{\vqd}{\dot{\mathbf{q}}}
+\newcommand{\vqdd}{\ddot{\mathbf{q}}}
+\newcommand{\vtau}{\boldsymbol{\tau}}
+\newcommand{\vp}{\mathbf{p}}
+\newcommand{\vpd}{\dot{\mathbf{p}}}
+\newcommand{\vpdd}{\ddot{\mathbf{p}}}
+\newcommand{\ve}{\mathbf{e}}
+\newcommand{\ved}{\dot{\mathbf{e}}}
+\newcommand{\M}{\mathbf{M}}
+\newcommand{\C}{\mathbf{C}}
+\newcommand{\vg}{\mathbf{g}}
+\newcommand{\J}{\mathbf{J}}
+\newcommand{\Kp}{\mathbf{K}_p}
+\newcommand{\Kd}{\mathbf{K}_d}
+\newcommand{\Ki}{\mathbf{K}_i}
+\newcommand{\diag}{\operatorname{diag}}
+
+\title{\textbf{2-DOF CubeMars Arm -- Trajectory Control}\\[4pt]
+       \large Controller survey: from joint-space PD to Computed Torque\\
+       Implementation via \texttt{ak\_v3\_bus.py} MIT mode}
+\author{Repo \texttt{exo-actuator-sensor-drivers}}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% =========================================================================
+\section{System Description}
+\label{sec:system}
+% =========================================================================
+
+The bench robot is a \textbf{2-DOF planar arm} driven by two
+\textbf{CubeMars AK60-6 V3.0 KV80} actuators.
+The shoulder motor ($q_1$) and elbow motor ($q_2$) are each connected to
+a SocketCAN bus (\texttt{can1}) via the DSDTech SH-C30A adapter and
+controlled through the \texttt{ak\_v3\_bus.py} / \texttt{AK\_V3\_CAN.py}
+driver stack.
+
+\subsection{Geometric parameters}
+
+\begin{center}
+\begin{tikzpicture}[scale=1.2, every node/.style={font=\small}]
+  % Ground / base
+  \draw[thick, gray!50] (-0.4,0) -- (0.4,0);
+  \foreach \x in {-0.35,-0.15,0.05,0.25}
+    \draw[gray!40, thin] (\x,0) -- (\x-0.15,-0.2);
+
+  % Link 1
+  \coordinate (O)  at (0,0);
+  \coordinate (E1) at (2.4,0.6);
+  \draw[very thick, blue!70!black, line cap=round] (O) -- (E1);
+  \fill[blue!50!black] (O)  circle (4pt);
+  \fill[blue!50!black] (E1) circle (3pt);
+  \draw[-Stealth, thin, blue!40!black] (0.6,0) arc[start angle=0,end angle=14,radius=0.6]
+    node[right, yshift=-1pt] {$q_1$};
+  \node[above, blue!70!black] at (1.2,0.4) {$L_1,\,m_1$};
+
+  % Link 2
+  \coordinate (E2) at (4.0,0.3);
+  \draw[very thick, orange!70!black, line cap=round] (E1) -- (E2);
+  \fill[orange!60!black] (E2) circle (3pt);
+  \node[above, orange!70!black] at (3.2,0.55) {$L_2,\,m_2$};
+  \draw[-Stealth, thin, orange!50] ($(E1)+(0.5,0.125)$)
+      arc[start angle=14,end angle=-12,radius=0.51]
+      node[right, yshift=1pt] {$q_2$};
+
+  % End-effector annotation
+  \draw[dashed, gray!60] (E2) -- ++(0.6,0)
+      node[right, black] {$\vp=(x,y)$};
+
+  % Coordinate labels
+  \node[below] at (O) {$\mathbf{0}$};
+  \draw[-Stealth, thin, gray!60] (O) -- (0.6,0) node[right, gray] {$X$};
+  \draw[-Stealth, thin, gray!60] (O) -- (0,0.6) node[above, gray] {$Y$};
+\end{tikzpicture}
+\end{center}
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+Symbol & Meaning & Typical value \\
+\midrule
+$L_1$     & Upper-arm link length            & 0.30\,m \\
+$L_2$     & Forearm link length              & 0.28\,m \\
+$m_1$     & Upper-arm mass (+ motor)         & 1.8\,kg \\
+$m_2$     & Forearm mass (+ motor)           & 1.2\,kg \\
+$I_1,I_2$ & Link moments of inertia          & $m_i L_i^2/3$ (uniform rod) \\
+$g$       & Gravitational acceleration       & 9.81\,m/s$^2$ \\
+$K_t$     & AK60-6 motor torque constant     & $\approx 0.14$\,N$\cdot$m/A \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =========================================================================
+\section{Robot Model}
+\label{sec:model}
+% =========================================================================
+
+\subsection{Forward kinematics}
+
+Let $s_1=\sin q_1$, $c_1=\cos q_1$, $s_{12}=\sin(q_1+q_2)$,
+$c_{12}=\cos(q_1+q_2)$.  The end-effector Cartesian position is
+
+\begin{equation}
+  \vp(\vq) = \begin{bmatrix} x \\ y \end{bmatrix}
+           = \begin{bmatrix}
+               L_1 c_1 + L_2 c_{12} \\
+               L_1 s_1 + L_2 s_{12}
+             \end{bmatrix}.
+  \label{eq:fk}
+\end{equation}
+
+\subsection{Jacobian}
+
+The geometric Jacobian relates joint velocities to end-effector velocity:
+$\vpd = \J(\vq)\,\vqd$,
+
+\begin{equation}
+  \J(\vq) = \begin{bmatrix}
+    -L_1 s_1 - L_2 s_{12} & -L_2 s_{12} \\
+     L_1 c_1 + L_2 c_{12} &  L_2 c_{12}
+  \end{bmatrix}.
+  \label{eq:jac}
+\end{equation}
+
+The Jacobian is singular when links are fully extended ($q_2 = 0$ or $\pi$).
+Damped pseudoinverse $\J^\dagger = \J^T(\J\J^T + \lambda^2\mathbf{I})^{-1}$
+is used near singularities ($\lambda \approx 0.01$--$0.05$).
+
+\subsection{Equations of motion}
+
+The standard rigid-body equations of motion are
+
+\begin{equation}
+  \M(\vq)\,\vqdd + \C(\vq,\vqd)\,\vqd + \vg(\vq) = \vtau,
+  \label{eq:eom}
+\end{equation}
+
+where $\vtau=[\tau_1,\tau_2]^T$ are joint torques delivered by the
+motors (output-shaft, N$\cdot$m).
+
+\paragraph{Inertia matrix.}  Treating each link as a uniform rod of mass
+$m_i$ and length $L_i$ (so $I_i = m_i L_i^2/3$), with $c_2=\cos q_2$:
+
+\begin{equation}
+  \M(\vq) = \begin{bmatrix} M_{11} & M_{12} \\ M_{12} & M_{22} \end{bmatrix},
+  \quad
+  \begin{aligned}
+    M_{11} &= \tfrac{4}{3}m_1 L_1^2 + m_2\bigl(L_1^2 + \tfrac{4}{3}L_2^2
+                + 2 L_1 L_2 c_2\bigr),\\
+    M_{12} &= m_2\bigl(\tfrac{4}{3}L_2^2 + L_1 L_2 c_2\bigr),\\
+    M_{22} &= \tfrac{4}{3}m_2 L_2^2.
+  \end{aligned}
+  \label{eq:M}
+\end{equation}
+
+\paragraph{Coriolis/centrifugal matrix.} With $s_2=\sin q_2$ and
+$h = -m_2 L_1 L_2 s_2$:
+
+\begin{equation}
+  \C(\vq,\vqd) = \begin{bmatrix}
+    h\dot q_2 & h(\dot q_1 + \dot q_2) \\
+   -h\dot q_1 & 0
+  \end{bmatrix}.
+  \label{eq:C}
+\end{equation}
+
+\paragraph{Gravity vector.}  (Vertical plane, $Y$ upward.)
+
+\begin{equation}
+  \vg(\vq) = g\begin{bmatrix}
+    (m_1/2 + m_2)\,L_1 c_1 + m_2 L_2/2\, c_{12} \\
+    m_2 L_2/2\, c_{12}
+  \end{bmatrix}.
+  \label{eq:grav}
+\end{equation}
+
+% =========================================================================
+\section{Available CubeMars Control Modes}
+\label{sec:modes}
+% =========================================================================
+
+The AK60-6 V3.0 firmware exposes the following modes, all reachable through
+\texttt{AK\_V3\_CAN.AkV3Motor} and the \texttt{ak\_v3\_bus.AkV3Bench} wrapper.
+
+\begin{center}\small
+\begin{tabular}{llll}
+\toprule
+Mode & Packet type & \texttt{data\_name} & Signal sent \\
+\midrule
+\textbf{MIT (force-control)} & \texttt{0x08} & \texttt{goal\_position} /
+  \texttt{goal\_torque} & $K_p,K_d,q_d,\dot q_d,\tau_\mathrm{ff}$ \\
+Position loop  & \texttt{0x04} & \texttt{goal\_position\_deg} & $q_d$ (degrees) \\
+Velocity loop  & \texttt{0x03} & \texttt{goal\_speed\_erpm}   & $\omega_d$ (ERPM) \\
+Current loop   & \texttt{0x01} & \texttt{goal\_duty}          & $I_q$ (duty) \\
+Pos-vel profile& \texttt{0x06} & \texttt{goal\_pos\_spd}      & $q_d,\omega_d,\alpha$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\bigskip\noindent
+The \textbf{MIT mode} is the most powerful because it lets the \emph{host}
+choose the torque it commands:
+\begin{equation}
+  \tau = K_p(q_d - q) + K_d(\dot q_d - \dot q) + \tau_\mathrm{ff},
+  \label{eq:mit}
+\end{equation}
+with $K_p\in[0,500]$ and $K_d\in[0,5]$ sent in the same CAN frame as the
+setpoint.  Setting $K_p=K_d=0$ delivers a \emph{pure torque} $\tau_\mathrm{ff}$
+directly from the current loop -- the fundamental building block for all
+model-based controllers described below.
+
+% =========================================================================
+\section{Trajectory Generation}
+\label{sec:traj}
+% =========================================================================
+
+A \emph{prescribed} end-effector trajectory $\vp_d(t)$, $\vpd_d(t)$,
+$\vpdd_d(t)$ must be converted to joint-space references
+$\vq_d(t)$, $\vqd_d(t)$, $\vqdd_d(t)$ before most joint-space controllers
+can be applied.
+
+\subsection{Inverse kinematics (closed-form, 2-DOF)}
+
+\begin{equation}
+  q_2 = \operatorname{atan2}\!\Bigl(\pm\sqrt{1-D^2},\, D\Bigr),
+  \quad D = \frac{x^2+y^2-L_1^2-L_2^2}{2L_1 L_2},
+  \label{eq:ik_q2}
+\end{equation}
+\begin{equation}
+  q_1 = \operatorname{atan2}(y,x)
+        - \operatorname{atan2}(L_2 s_2,\; L_1 + L_2 c_2).
+  \label{eq:ik_q1}
+\end{equation}
+The $\pm$ sign selects elbow-up ($+$) or elbow-down ($-$) configuration.
+
+\subsection{Joint velocity and acceleration from Jacobian}
+
+Differentiate \eqref{eq:fk}:
+\begin{equation}
+  \vqd_d = \J^\dagger(\vq_d)\,\vpd_d, \qquad
+  \vqdd_d = \J^\dagger(\vq_d)\bigl(\vpdd_d - \dot\J(\vq_d,\vqd_d)\,\vqd_d\bigr).
+  \label{eq:jac_diff}
+\end{equation}
+
+\subsection{Minimum-jerk trajectory in Cartesian space}
+
+For point-to-point moves from $\vp_0$ to $\vp_f$ in time $T$, the
+minimum-jerk polynomial satisfies zero position, velocity, and acceleration
+at both endpoints:
+\begin{equation}
+  \vp_d(t) = \vp_0 + (\vp_f - \vp_0)
+    \Bigl[10\bigl(t/T\bigr)^3 - 15\bigl(t/T\bigr)^4
+          + 6\bigl(t/T\bigr)^5\Bigr].
+  \label{eq:minjerk}
+\end{equation}
+
+% =========================================================================
+\section{Controllers}
+\label{sec:ctrl}
+% =========================================================================
+
+All controllers are compared in Table~\ref{tab:summary} at the end of
+this section.
+
+% -------------------------------------------------------------------------
+\subsection{Joint-space PD}
+\label{sec:pd}
+% -------------------------------------------------------------------------
+
+\textbf{Idea.}  Ignore robot dynamics; treat each joint independently as
+a spring-damper.
+
+\begin{equation}
+  \vtau = \Kp\,\ve + \Kd\,\ved,
+  \quad \ve = \vq_d - \vq, \quad \ved = \vqd_d - \vqd.
+  \label{eq:pd}
+\end{equation}
+
+$\Kp=\diag(k_{p1},k_{p2})$ and $\Kd=\diag(k_{d1},k_{d2})$ are diagonal
+positive-definite gain matrices.  For stable regulation choose
+$k_{pi} > 0$, $k_{di} > 0$.
+
+\paragraph{MIT mode mapping.}
+The motor's own on-board PD loop \eqref{eq:mit} \emph{already is} this
+controller when $\tau_\mathrm{ff}=0$.  Set the MIT gains directly:
+
+\begin{lstlisting}[caption={Joint-space PD via on-board MIT gains}]
+# shoulder = j1, elbow = j2
+bus1.write("goal_position", {"j1": q_d1}, kp=60, kd=1.5)
+bus2.write("goal_position", {"j2": q_d2}, kp=40, kd=1.2)
+\end{lstlisting}
+
+This works but ignores cross-coupling between joints.  Suitable for
+low-speed, lightly loaded motions.
+
+% -------------------------------------------------------------------------
+\subsection{Joint-space PD with Gravity Compensation}
+\label{sec:pdg}
+% -------------------------------------------------------------------------
+
+Add the static gravity term to remove steady-state error:
+
+\begin{equation}
+  \vtau = \Kp\,\ve + \Kd\,\ved + \vg(\vq).
+  \label{eq:pdg}
+\end{equation}
+
+In MIT mode, pass the gravity torques as feedforward:
+
+\begin{lstlisting}[caption={PD + gravity compensation}]
+import numpy as np
+
+def gravity(q, L, m, g=9.81):
+    g1 = g*((m[0]/2 + m[1])*L[0]*np.cos(q[0])
+             + m[1]*L[1]/2*np.cos(q[0]+q[1]))
+    g2 = g*m[1]*L[1]/2*np.cos(q[0]+q[1])
+    return np.array([g1, g2])
+
+# Inside control loop:
+q, dq, _ = bus1.read_state()["j1"], ...  # fetch state
+tau_g = gravity(q, L, m)
+
+bus1.write("goal_position", {"j1": q_d[0]},
+           kp=60, kd=1.5, tau_ff=tau_g[0])
+bus2.write("goal_position", {"j2": q_d[1]},
+           kp=40, kd=1.2, tau_ff=tau_g[1])
+\end{lstlisting}
+
+% -------------------------------------------------------------------------
+\subsection{Joint-space PID}
+\label{sec:pid}
+% -------------------------------------------------------------------------
+
+Add an integral term to eliminate residual steady-state error:
+
+\begin{equation}
+  \vtau = \Kp\,\ve + \Ki\int_0^t\!\ve\,d\tau + \Kd\,\ved.
+  \label{eq:pid}
+\end{equation}
+
+\textbf{Anti-windup:} clamp the integral
+$\|\mathbf{e}_I\|_\infty \le e_I^\mathrm{max}$ each tick.
+Send the computed torque entirely as $\tau_\mathrm{ff}$ (set $K_p=K_d=0$
+in the MIT frame) so on-board gains do not double-count:
+
+\begin{lstlisting}[caption={Software PID (tau\_ff only)}]
+e_int = np.zeros(2)   # persistent integral accumulator
+
+def pid_step(q, dq, q_d, dqd, dt, Kp, Ki, Kd, e_int,
+             e_int_max=0.5):
+    e   = q_d - q
+    de  = dqd - dq
+    e_int += e * dt
+    e_int  = np.clip(e_int, -e_int_max, e_int_max)  # anti-windup
+    return Kp*e + Ki*e_int + Kd*de, e_int
+
+# Usage (kp=kd=0: pure tau_ff)
+tau, e_int = pid_step(q, dq, q_d, dqd, dt,
+                      Kp=np.array([40,30]),
+                      Ki=np.array([5, 3]),
+                      Kd=np.array([1.5,1.0]), e_int=e_int)
+bus1.write("goal_torque", {"j1": tau[0]})
+bus2.write("goal_torque", {"j2": tau[1]})
+\end{lstlisting}
+
+% -------------------------------------------------------------------------
+\subsection{Computed Torque Control (CTC)}
+\label{sec:ctc}
+% -------------------------------------------------------------------------
+
+\textbf{Idea.}  Invert the full nonlinear dynamics so the closed-loop
+error behaves as a \emph{linear} second-order system:
+
+\begin{equation}
+  \boxed{
+    \vtau = \M(\vq)\bigl[\vqdd_d + \Kd\,\ved + \Kp\,\ve\bigr]
+          + \C(\vq,\vqd)\,\vqd + \vg(\vq).
+  }
+  \label{eq:ctc}
+\end{equation}
+
+Substituting into \eqref{eq:eom} gives the linear error dynamics:
+\begin{equation}
+  \vqdd_e + \Kd\,\vqd_e + \Kp\,\vq_e = \mathbf{0},
+  \label{eq:ctc_err}
+\end{equation}
+where $\vq_e=\vq_d-\vq$.  Choose $\Kd=2\zeta\omega_n\mathbf{I}$ and
+$\Kp=\omega_n^2\mathbf{I}$ for critically damped response at bandwidth
+$\omega_n$ [rad/s].
+
+\paragraph{Practical bandwidth.}  The full CTC loop must close at
+$\ge 5\,\omega_n$.  With the CubeMars CAN round-trip $\approx$1\,ms
+(1 kHz effective), target $\omega_n\le 20$\,rad/s.
+
+\begin{lstlisting}[caption={Computed Torque Control implementation}]
+import numpy as np
+
+# --- Robot parameters (fill in your measured values) ---
+L  = np.array([0.30, 0.28])      # link lengths  [m]
+m  = np.array([1.80, 1.20])      # link masses   [kg]
+g  = 9.81
+
+def inertia_matrix(q):
+    c2 = np.cos(q[1])
+    M11 = (4/3*m[0]*L[0]**2
+           + m[1]*(L[0]**2 + 4/3*L[1]**2 + 2*L[0]*L[1]*c2))
+    M12 = m[1]*(4/3*L[1]**2 + L[0]*L[1]*c2)
+    M22 = 4/3*m[1]*L[1]**2
+    return np.array([[M11, M12], [M12, M22]])
+
+def coriolis_matrix(q, dq):
+    h   = -m[1]*L[0]*L[1]*np.sin(q[1])
+    return np.array([[h*dq[1],          h*(dq[0]+dq[1])],
+                     [-h*dq[0],         0.0            ]])
+
+def gravity_vector(q):
+    g1 = g*((m[0]/2+m[1])*L[0]*np.cos(q[0])
+             + m[1]*L[1]/2*np.cos(q[0]+q[1]))
+    g2 = g*m[1]*L[1]/2*np.cos(q[0]+q[1])
+    return np.array([g1, g2])
+
+# --- CTC gains (critically damped, omega_n = 15 rad/s) ---
+wn  = 15.0
+Kp  = wn**2  * np.eye(2)
+Kd  = 2*wn   * np.eye(2)   # zeta = 1
+
+# --- Control loop (100 Hz) ---
+def ctc_torque(q, dq, q_d, dqd, qdd_d):
+    e   = q_d  - q
+    de  = dqd  - dq
+    v   = qdd_d + Kd @ de + Kp @ e   # desired acceleration
+    tau = inertia_matrix(q) @ v \
+        + coriolis_matrix(q, dq) @ dq \
+        + gravity_vector(q)
+    return np.clip(tau, -12.0, 12.0)  # AK60-6 T_MAX = 12 N.m
+
+# Send as pure feedforward (kp=kd=0 bypasses on-board PD):
+tau = ctc_torque(q, dq, q_d, dqd, qdd_d)
+bus1.write("goal_torque", {"j1": tau[0]})
+bus2.write("goal_torque", {"j2": tau[1]})
+\end{lstlisting}
+
+\paragraph{Robustness note.}  CTC performance degrades when the model
+parameters ($m_i$, $L_i$) are inaccurate.  Add a PD feedforward term
+in the MIT frame as an outer stabilizing loop (Section~\ref{sec:ctc_pd}).
+
+% -------------------------------------------------------------------------
+\subsection{CTC with Inner MIT Damping}
+\label{sec:ctc_pd}
+% -------------------------------------------------------------------------
+
+A practical hybrid: CTC provides the model-inversion feedforward while
+small on-board $K_d$ damps unmodelled high-frequency oscillations without
+fighting the CTC loop:
+
+\begin{equation}
+  \tau_\mathrm{ff} = \M(\vq)\bigl[\vqdd_d + \Kd^\mathrm{outer}\,\ved
+                       + \Kp^\mathrm{outer}\,\ve\bigr]
+                   + \C\vqd + \vg(\vq),
+  \label{eq:ctc_hybrid}
+\end{equation}
+\begin{equation}
+  \text{CAN frame:}\quad K_p^\mathrm{MIT}=0,\quad
+  K_d^\mathrm{MIT}=0.3\text{--}0.6,\quad
+  \tau_\mathrm{ff}=\text{eq.~\eqref{eq:ctc_hybrid}}.
+  \label{eq:ctc_hybrid_can}
+\end{equation}
+
+\begin{lstlisting}[caption={Hybrid CTC -- feedforward + small on-board damping}]
+tau = ctc_torque(q, dq, q_d, dqd, qdd_d)
+# kp=0 (no spring), kd=0.4 (damps encoder noise), tau_ff = CTC output
+bus1.write("mit_command", {"j1": q_d[0]},
+           kp=0.0, kd=0.4, dq_des=dqd[0], tau_ff=tau[0])
+bus2.write("mit_command", {"j2": q_d[1]},
+           kp=0.0, kd=0.4, dq_des=dqd[1], tau_ff=tau[1])
+\end{lstlisting}
+
+% -------------------------------------------------------------------------
+\subsection{Cartesian PD (Jacobian Transpose)}
+\label{sec:cart_pd}
+% -------------------------------------------------------------------------
+
+Apply spring-damper forces \emph{in Cartesian space} and back-project
+through the Jacobian transpose:
+
+\begin{equation}
+  \vtau = \J^T(\vq)\bigl[\Kp^\mathrm{cart}(\vp_d-\vp)
+              + \Kd^\mathrm{cart}(\vpd_d-\vpd)\bigr] + \vg(\vq).
+  \label{eq:cartpd}
+\end{equation}
+
+No matrix inversion needed; avoids singularity issues present in
+pseudoinverse methods (near singularity the transpose simply produces
+less Cartesian force, which is safe).
+
+\begin{lstlisting}[caption={Cartesian PD via Jacobian transpose}]
+def jacobian(q):
+    s1  = np.sin(q[0]);  c1  = np.cos(q[0])
+    s12 = np.sin(q[0]+q[1]); c12 = np.cos(q[0]+q[1])
+    return np.array([
+        [-L[0]*s1 - L[1]*s12,  -L[1]*s12],
+        [ L[0]*c1 + L[1]*c12,   L[1]*c12]
+    ])
+
+def fk(q):
+    return np.array([
+        L[0]*np.cos(q[0]) + L[1]*np.cos(q[0]+q[1]),
+        L[0]*np.sin(q[0]) + L[1]*np.sin(q[0]+q[1])
+    ])
+
+Kpc = np.diag([200, 200])   # N/m Cartesian stiffness
+Kdc = np.diag([ 20,  20])   # N.s/m Cartesian damping
+
+def cartpd_torque(q, dq, p_d, pd_d):
+    p   = fk(q)
+    J   = jacobian(q)
+    pd  = J @ dq                     # current EE velocity
+    F   = Kpc @ (p_d - p) + Kdc @ (pd_d - pd)
+    return J.T @ F + gravity_vector(q)
+
+tau = cartpd_torque(q, dq, p_d, pd_d)
+bus1.write("goal_torque", {"j1": tau[0]})
+bus2.write("goal_torque", {"j2": tau[1]})
+\end{lstlisting}
+
+% -------------------------------------------------------------------------
+\subsection{Operational Space Control (Task-Space Inversion)}
+\label{sec:osc}
+% -------------------------------------------------------------------------
+
+Full model-based control directly in task space.  Define the
+\emph{operational-space inertia matrix}
+$\boldsymbol\Lambda = (\J\M^{-1}\J^T)^{-1}$,
+Coriolis-like term $\boldsymbol\mu = \boldsymbol\Lambda\J\M^{-1}\C\vqd$,
+and gravity projection $\boldsymbol\rho = \boldsymbol\Lambda\J\M^{-1}\vg$:
+
+\begin{equation}
+  \vtau = \J^T\!\left[
+    \boldsymbol\Lambda\bigl(\vpdd_d + \Kd^\mathrm{OS}\,\ved^\mathrm{cart}
+                            + \Kp^\mathrm{OS}\,\ve^\mathrm{cart}\bigr)
+    + \boldsymbol\mu + \boldsymbol\rho
+  \right],
+  \label{eq:osc}
+\end{equation}
+where $\ve^\mathrm{cart}=\vp_d-\vp$ and $\ved^\mathrm{cart}=\vpd_d-\vpd$.
+The closed-loop task-space dynamics are linear: $\vpdd_e + \Kd^\mathrm{OS}\vpd_e + \Kp^\mathrm{OS}\vp_e=\mathbf{0}$.
+
+\begin{lstlisting}[caption={Operational Space Control}]
+def osc_torque(q, dq, p_d, pd_d, pdd_d):
+    J  = jacobian(q);   M  = inertia_matrix(q)
+    C  = coriolis_matrix(q, dq);  gv = gravity_vector(q)
+    Minv = np.linalg.inv(M)
+
+    lam_inv = J @ Minv @ J.T
+    lam     = np.linalg.inv(lam_inv + 1e-4*np.eye(2))  # damped
+
+    mu  = lam @ J @ Minv @ C @ dq
+    rho = lam @ J @ Minv @ gv
+
+    p   = fk(q)
+    pd  = J @ dq
+    e_c  = p_d  - p
+    de_c = pd_d - pd
+
+    Kp_os = 400*np.eye(2)    # N/m
+    Kd_os =  40*np.eye(2)    # N.s/m  (critically damped at ~10 Hz)
+
+    F_os  = lam @ (pdd_d + Kd_os @ de_c + Kp_os @ e_c) + mu + rho
+    return np.clip(J.T @ F_os, -12.0, 12.0)
+
+tau = osc_torque(q, dq, p_d, pd_d, pdd_d)
+bus1.write("goal_torque", {"j1": tau[0]})
+bus2.write("goal_torque", {"j2": tau[1]})
+\end{lstlisting}
+
+% -------------------------------------------------------------------------
+\subsection{Cartesian Impedance Control}
+\label{sec:impedance}
+% -------------------------------------------------------------------------
+
+Impedance control shapes the \emph{apparent mechanical impedance} of the
+end-effector -- useful for compliant interaction with the environment:
+
+\begin{equation}
+  \boldsymbol{\mathcal{M}}_d\,\ve^\mathrm{cart}_{dd}
+  + \mathbf{B}_d\,\ved^\mathrm{cart}
+  + \mathbf{K}_d\,\ve^\mathrm{cart} = \mathbf{f}_\mathrm{ext},
+  \label{eq:impedance}
+\end{equation}
+
+where $\boldsymbol{\mathcal{M}}_d$, $\mathbf{B}_d$, $\mathbf{K}_d$ are the
+desired Cartesian inertia, damping, and stiffness tensors and
+$\mathbf{f}_\mathrm{ext}$ is the external contact force.
+Setting $\mathbf{f}_\mathrm{ext}=\mathbf{0}$ (no contact) reduces to the
+trajectory-tracking case.
+
+Implementation via task-space torque:
+\begin{equation}
+  \vtau = \J^T\bigl[
+    \mathbf{K}_d(\vp_d-\vp)
+    + \mathbf{B}_d(\vpd_d-\vpd)
+    + \boldsymbol{\mathcal{M}}_d(\vpdd_d - \J\M^{-1}(\C\vqd+\vg-\vtau_\mathrm{null}))
+  \bigr] + \vg(\vq),
+  \label{eq:impedance_impl}
+\end{equation}
+
+For free-space tracking the simplified form is equivalent to
+Cartesian PD \eqref{eq:cartpd} with $\Kp^\mathrm{cart}\to\mathbf{K}_d$
+and $\Kd^\mathrm{cart}\to\mathbf{B}_d$.
+
+\begin{lstlisting}[caption={Cartesian impedance (free-space tracking)}]
+# Desired impedance parameters
+Md = np.diag([1.0, 1.0])    # kg  -- virtual mass
+Bd = np.diag([30,  30 ])    # N.s/m -- virtual damping
+Kd = np.diag([300, 300])    # N/m  -- virtual stiffness
+
+def impedance_torque(q, dq, p_d, pd_d, pdd_d):
+    J  = jacobian(q)
+    p  = fk(q);  pd = J @ dq
+    e  = p_d - p;  de = pd_d - pd
+
+    F_imp = Kd @ e + Bd @ de + Md @ pdd_d   # desired task force
+    return np.clip(J.T @ F_imp + gravity_vector(q), -12.0, 12.0)
+
+tau = impedance_torque(q, dq, p_d, pd_d, pdd_d)
+bus1.write("goal_torque", {"j1": tau[0]})
+bus2.write("goal_torque", {"j2": tau[1]})
+\end{lstlisting}
+
+The MIT mode can also implement joint-space impedance natively by setting
+$K_p^\mathrm{MIT}$ and $K_d^\mathrm{MIT}$ to low values and updating
+$q_d$ each tick, as in the kinesthetic teaching scripts
+\texttt{08\_kinesthetic\_record.py} / \texttt{05\_kinesthetic\_record.py}.
+
+% =========================================================================
+\section{Two-Motor Implementation Architecture}
+\label{sec:impl}
+% =========================================================================
+
+\subsection{Bus setup: two AkV3Bench instances}
+
+Each motor lives on its own \texttt{AkV3Bench} (separate \texttt{can\_id}).
+Both share the same SocketCAN bus handle:
+
+\begin{lstlisting}[caption={Dual-motor setup}]
+import can
+from ak_v3_bus import AkV3Bench
+
+# Open one SocketCAN bus shared by both motors
+raw_bus = can.Bus(channel="can1", interface="socketcan")
+
+shoulder = AkV3Bench(channel="can1", can_id=0x01,
+                     model="AK60-6", name="shoulder")
+elbow    = AkV3Bench(channel="can1", can_id=0x02,
+                     model="AK60-6", name="elbow")
+
+shoulder.connect(set_zero=True)
+elbow.connect(   set_zero=True)
+\end{lstlisting}
+
+\subsection{Control loop skeleton}
+
+\begin{lstlisting}[caption={Generic 100-Hz control loop}]
+import time
+import numpy as np
+
+DT = 0.01    # 100 Hz control loop
+t0 = time.monotonic()
+
+try:
+    while True:
+        t = time.monotonic() - t0
+
+        # 1. Read joint state (one CAN round-trip each)
+        q1, dq1, _ = shoulder.read_state()["shoulder"]
+        q2, dq2, _ = elbow.read_state()["elbow"]
+        q  = np.array([q1,  q2 ])
+        dq = np.array([dq1, dq2])
+
+        # 2. Evaluate reference trajectory at time t
+        q_d, dqd, qdd_d = trajectory(t)   # user-defined function
+
+        # 3. Compute control torques (select one controller below)
+        tau = ctc_torque(q, dq, q_d, dqd, qdd_d)   # CTC
+        # tau = cartpd_torque(q, dq, p_d(t), pd_d(t))  # Cartesian PD
+        # tau = osc_torque(q, dq, p_d(t), pd_d(t), pdd_d(t))  # OSC
+
+        # 4. Send commands (pure feedforward)
+        shoulder.write("goal_torque", {"shoulder": tau[0]})
+        elbow.write(   "goal_torque", {"elbow":    tau[1]})
+
+        # 5. Pace loop
+        time.sleep(max(0, DT - (time.monotonic() - t0 - t)))
+
+except KeyboardInterrupt:
+    pass
+finally:
+    shoulder.disconnect()
+    elbow.disconnect()
+\end{lstlisting}
+
+\subsection{Feedback latency and timing}
+
+Each \texttt{read\_state()} call triggers one MIT frame (to provoke a
+reply in Query-Reply CAN mode) and blocks for up to 100\,ms.
+For a two-joint arm this adds $\approx$2\,ms serialised latency per
+control tick.  Mitigations:
+\begin{itemize}
+  \item Use \textbf{Periodic Feedback} mode (set via R-Link): motor
+        auto-broadcasts at a fixed rate.  Parse frames in a
+        background thread and read the latest cached state.
+  \item Send both MIT commands \emph{before} reading feedback to
+        reduce effective round-trip time.
+  \item For CTC at $\omega_n\le 15$\,rad/s a 10\,ms loop with 2\,ms
+        feedback latency introduces $<\!10\%$ phase margin loss -- still stable.
+\end{itemize}
+
+% =========================================================================
+\section{Controller Comparison}
+\label{sec:compare}
+% =========================================================================
+
+\begin{center}\small
+\begin{tabular}{p{3.2cm} p{2.3cm} p{2.2cm} p{2.5cm} p{3.2cm}}
+\toprule
+Controller & Model needed & Singularity handling & Steady-state error & Best use case \\
+\midrule
+Joint-space PD              & None      & N/A (joint) & Yes (with gravity) & Fast prototyping \\
+PD + gravity comp.          & $\vg(\vq)$ only & N/A   & Eliminated & Slow point-to-point \\
+PID                         & None      & N/A         & Eliminated & Unknown disturbances \\
+\textbf{CTC}                & Full $\M,\C,\vg$ & N/A  & Eliminated & Trajectory tracking \\
+CTC + inner damping         & Full model & N/A        & Eliminated & Noisy encoders / flexible links \\
+Cartesian PD (J\,transpose) & $\vg$ + $\J$ & Safe (no inversion) & Yes (joint space) & Soft interaction \\
+Operational Space Control   & Full model & Damped pseudo-inv & Eliminated & Cartesian trajectory \\
+Cartesian impedance         & $\J$ + $\vg$ & Safe     & Designed-in & Contact / teaching \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% =========================================================================
+\section{Worked Example: Circle Trajectory with CTC}
+\label{sec:example}
+% =========================================================================
+
+Generate a circular end-effector trajectory of radius $r=0.05$\,m centred
+at $(0.40,\, 0.15)$\,m, period $T=4$\,s, then control it with CTC.
+
+\begin{lstlisting}[caption={Circular trajectory + CTC end-to-end}]
+import numpy as np, time
+from ak_v3_bus import AkV3Bench
+
+# ---- Arm parameters ----
+L = np.array([0.30, 0.28])
+m = np.array([1.80, 1.20])
+p_c = np.array([0.40, 0.15])   # circle centre
+r, T_circ = 0.05, 4.0
+
+# ---- Trajectory ----
+def circle(t):
+    th  = 2*np.pi*t / T_circ
+    p   = p_c + r*np.array([ np.cos(th),  np.sin(th)])
+    pd  =       r*2*np.pi/T_circ*np.array([-np.sin(th), np.cos(th)])
+    pdd =      -r*(2*np.pi/T_circ)**2*np.array([np.cos(th), np.sin(th)])
+    return p, pd, pdd
+
+# ---- IK ----
+def ik(p):
+    D  = (p@p - L[0]**2 - L[1]**2) / (2*L[0]*L[1])
+    D  = np.clip(D, -1+1e-6, 1-1e-6)
+    q2 = np.arctan2(np.sqrt(1-D**2), D)    # elbow-up
+    q1 = np.arctan2(p[1],p[0]) - np.arctan2(L[1]*np.sin(q2),
+                                              L[0]+L[1]*np.cos(q2))
+    return np.array([q1, q2])
+
+def jacobian(q):
+    s12 = np.sin(q[0]+q[1]); c12 = np.cos(q[0]+q[1])
+    s1  = np.sin(q[0]);       c1  = np.cos(q[0])
+    return np.array([[-L[0]*s1-L[1]*s12, -L[1]*s12],
+                     [ L[0]*c1+L[1]*c12,  L[1]*c12]])
+
+def traj_joint(t):
+    p, pd, pdd = circle(t)
+    q_d  = ik(p)
+    J    = jacobian(q_d)
+    Jinv = np.linalg.pinv(J)
+    qd   = Jinv @ pd
+    qdd  = Jinv @ pdd        # approximate (ignores dJ term at low speed)
+    return q_d, qd, qdd
+
+# ---- CTC (from Section 4.4) -- inlined ----
+wn = 12.0
+Kp_c = wn**2 * np.eye(2)
+Kd_c = 2*wn  * np.eye(2)
+
+def M(q):
+    c2 = np.cos(q[1])
+    m11 = 4/3*m[0]*L[0]**2 + m[1]*(L[0]**2+4/3*L[1]**2+2*L[0]*L[1]*c2)
+    m12 = m[1]*(4/3*L[1]**2+L[0]*L[1]*c2)
+    return np.array([[m11,m12],[m12,4/3*m[1]*L[1]**2]])
+
+def C(q,dq):
+    h = -m[1]*L[0]*L[1]*np.sin(q[1])
+    return np.array([[h*dq[1], h*(dq[0]+dq[1])],[-h*dq[0],0.0]])
+
+def gv(q):
+    g1 = 9.81*((m[0]/2+m[1])*L[0]*np.cos(q[0])+m[1]*L[1]/2*np.cos(q[0]+q[1]))
+    return np.array([g1, 9.81*m[1]*L[1]/2*np.cos(q[0]+q[1])])
+
+def ctc(q, dq, q_d, dqd, qdd_d):
+    e  = q_d-q; de = dqd-dq
+    v  = qdd_d + Kd_c@de + Kp_c@e
+    return np.clip(M(q)@v + C(q,dq)@dq + gv(q), -12.0, 12.0)
+
+# ---- Main loop ----
+shoulder = AkV3Bench(can_id=0x01, name="shoulder")
+elbow    = AkV3Bench(can_id=0x02, name="elbow")
+
+with shoulder, elbow:
+    t0 = time.monotonic()
+    while True:
+        t  = time.monotonic()-t0
+        q1,dq1,_ = shoulder.read_state()["shoulder"]
+        q2,dq2,_ = elbow.read_state()["elbow"]
+        q  = np.array([q1,q2]); dq = np.array([dq1,dq2])
+        q_d, dqd, qdd_d = traj_joint(t)
+        tau = ctc(q, dq, q_d, dqd, qdd_d)
+        shoulder.write("goal_torque", {"shoulder": tau[0]})
+        elbow.write(   "goal_torque", {"elbow":    tau[1]})
+        time.sleep(0.01)
+\end{lstlisting}
+
+% =========================================================================
+\section{Safety Constraints}
+\label{sec:safety}
+% =========================================================================
+
+\begin{itemize}
+  \item \textbf{Torque limits:}  $|\tau_i|\le 12$\,N$\cdot$m (\texttt{T\_MAX}).
+        Always clip computed torques before sending.
+  \item \textbf{Velocity limits:}  $|\dot q_i|\le 60$\,rad/s.
+        Saturate $\dot q_d$ in the trajectory generator.
+  \item \textbf{Singularity avoidance:}  $|q_2| > 5^\circ$ from
+        fully extended / folded.  Monitor $|\det\J|$; switch to
+        Cartesian PD (J-transpose) near singularities.
+  \item \textbf{Workspace limits:}  Impose joint-angle limits in IK:
+        $q_1\in[-\pi/2,\pi]$, $q_2\in[10^\circ,170^\circ]$ (hardware stops).
+  \item \textbf{Emergency stop:}  Send
+        \texttt{bus.write("goal\_torque", \{name: 0.0\})} on Ctrl+C
+        (handled by \texttt{\_\_exit\_\_} in \texttt{AkV3Bench}).
+  \item \textbf{Thermal:}  Monitor \texttt{read\_raw()["shoulder"][3]}
+        (MOS temperature); pause if $>70^\circ$C.
+\end{itemize}
+
+\end{document}
